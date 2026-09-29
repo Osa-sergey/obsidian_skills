@@ -32,9 +32,9 @@ from typing import Dict, List, Optional
 
 from . import markdown as md
 from .frontmatter_ops import merge_frontmatter, serialize_frontmatter
+from .markdown import BLOCK_ID_RE
 from .write import atomic_write, make_diff, new_change_id, region_hash
 
-BLOCK_ID_RE = re.compile(r"\^([A-Za-z0-9-]+)\s*$")
 MANAGED_START_RE = re.compile(
     r"<!--\s*obsidian-skills:managed\s+id=(?P<id>[\w-]+)[^>]*-->\n?"
 )

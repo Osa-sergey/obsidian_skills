@@ -27,8 +27,15 @@ import yaml
 FENCE_RE = re.compile(r"^(```+|~~~+)")
 HEADING_RE = re.compile(r"^(#{1,6})\s+(.*\S)\s*$")
 CALLOUT_RE = re.compile(r"^>\s*\[!([A-Za-z]+)\][+-]?\s*(.*)$")
+# End-of-line Obsidian block reference, e.g. "...text ^abc123". Canonical
+# here (markdown syntax); patch.py imports it rather than redefining it.
+BLOCK_ID_RE = re.compile(r"\^([A-Za-z0-9-]+)\s*$")
+# `target` allows zero characters so a same-file link like [[#Heading]] or
+# [[#^blockid]] (no note name before the '#') still matches - Obsidian
+# treats an empty target as "this file"; resolve_link_target below turns
+# that into the source path itself rather than reporting not_found.
 WIKILINK_RE = re.compile(
-    r"(?P<embed>!)?\[\[(?P<target>[^\]|#^]+?)"
+    r"(?P<embed>!)?\[\[(?P<target>[^\]|#^]*?)"
     r"(?:#(?P<blockmark>\^)?(?P<anchor>[^\]|]+))?"
     r"(?:\|(?P<alias>[^\]]+))?\]\]"
 )
@@ -115,7 +122,16 @@ def parse_headings(body: str, body_start_line: int = 1) -> List[Heading]:
     lines = body.splitlines()
     raw: List[Heading] = []
     in_fence_mask = fence_mask(lines)
-    stack: List[str] = []
+    # (level, title) pairs for the currently open ancestor chain. Truncating
+    # by *level value*, not by stack length, is what makes this correct
+    # when a document skips levels or - very common in this vault, where a
+    # note's body starts straight at '##' with no '#' title - never opens
+    # at H1 at all: a stack-length-based truncation (`stack[:level-1]`)
+    # silently treats a previous *sibling* at the same level as if it were
+    # a kept ancestor whenever the stack's length already happens to equal
+    # level-1, producing a wrong, too-deep `path` for every heading after
+    # the first at that level.
+    stack: List[tuple] = []
     for i, line in enumerate(lines):
         if in_fence_mask[i]:
             continue
@@ -124,15 +140,16 @@ def parse_headings(body: str, body_start_line: int = 1) -> List[Heading]:
             continue
         level = len(hm.group(1))
         title = hm.group(2).strip()
-        stack = stack[: level - 1]
-        stack.append(title)
+        while stack and stack[-1][0] >= level:
+            stack.pop()
+        stack.append((level, title))
         raw.append(
             Heading(
                 level=level,
                 title=title,
                 line_start=body_start_line + i,
                 line_end=-1,  # filled below
-                path=tuple(stack),
+                path=tuple(t for _, t in stack),
             )
         )
     # resolve line_end: next heading with level <= this one, else EOF
@@ -153,14 +170,40 @@ def slice_lines(raw_text: str, line_start: int, line_end: int) -> str:
     return "\n".join(lines[line_start - 1: line_end - 1])
 
 
+def section_end_line(headings: List[Heading], heading: Heading, child_depth: int = 0) -> int:
+    """The exclusive end line for `heading`'s own text plus up to
+    `child_depth` levels of descendant subsections (0 = stop at the first
+    child heading of any depth, i.e. own_text's boundary). Stops at the
+    first descendant whose relative depth exceeds child_depth and does not
+    resume past it even if a shallower sibling follows later in the same
+    section - real notes are almost always uniformly nested, and a
+    fragment with a gap in the middle would be more confusing than a
+    clean, slightly shorter cutoff (used by read_fragment's
+    include_children)."""
+    if child_depth <= 0:
+        for h in headings:
+            if heading.line_start < h.line_start < heading.line_end:
+                return h.line_start
+        return heading.line_end
+    limit_level = heading.level + child_depth
+    for h in headings:
+        if h.line_start <= heading.line_start or h.line_start >= heading.line_end:
+            continue
+        if h.level > limit_level:
+            return h.line_start
+    return heading.line_end
+
+
 def own_text(raw_text: str, headings: List[Heading], heading: Heading) -> str:
     """This heading's text, stopping at its first child sub-heading."""
-    child_start = heading.line_end
-    for h in headings:
-        if h.line_start > heading.line_start and h.line_start < heading.line_end:
-            child_start = h.line_start
-            break
-    return slice_lines(raw_text, heading.line_start, child_start)
+    return slice_lines(raw_text, heading.line_start, section_end_line(headings, heading, 0))
+
+
+def text_with_children(raw_text: str, headings: List[Heading], heading: Heading, child_depth: int) -> str:
+    """own_text, extended to include descendant subsections up to
+    child_depth levels below `heading` (fragment-reader passport rule 3:
+    include_children adds only child subsections up to a given depth)."""
+    return slice_lines(raw_text, heading.line_start, section_end_line(headings, heading, child_depth))
 
 
 def find_heading(headings: List[Heading], query: str) -> List[Heading]:
@@ -212,23 +255,28 @@ def count_sentences(text: str) -> int:
 PARA_BREAK_RE = re.compile(r"^\s*$")
 
 
-def split_paragraphs(text: str) -> List[str]:
-    """Blank-line-delimited paragraphs, keeping fences/callouts atomic."""
-    lines = text.splitlines()
-    paras: List[str] = []
+def split_paragraphs_with_bounds(lines: List[str], base_line: int = 1) -> List[tuple]:
+    """Like split_paragraphs, but returns (line_start, line_end_exclusive,
+    text) - 1-indexed against `base_line` (the file-numbering of lines[0]).
+    Used by fragment addressing (a block id or line-range needs to know
+    which whole paragraph it sits in, not just the paragraph's text)."""
+    paras: List[tuple] = []
     buf: List[str] = []
+    buf_start = None
     in_fence = False
     fence_marker = None
     in_callout = False
 
-    def flush():
+    def flush(end_idx: int):
+        nonlocal buf_start
         if buf:
             joined = "\n".join(buf).strip("\n")
             if joined.strip():
-                paras.append(joined)
+                paras.append((base_line + buf_start, base_line + end_idx, joined))
             buf.clear()
+        buf_start = None
 
-    for line in lines:
+    for i, line in enumerate(lines):
         stripped = line.strip()
         fm = FENCE_RE.match(stripped)
         if fm:
@@ -236,6 +284,8 @@ def split_paragraphs(text: str) -> List[str]:
             if not in_fence:
                 in_fence = True
                 fence_marker = marker
+                if buf_start is None:
+                    buf_start = i
                 buf.append(line)
             elif stripped.startswith(fence_marker):
                 buf.append(line)
@@ -247,17 +297,26 @@ def split_paragraphs(text: str) -> List[str]:
             continue
         if stripped.startswith(">"):
             if not in_callout and buf and not buf[-1].strip().startswith(">"):
-                flush()
+                flush(i)
             in_callout = True
+            if buf_start is None:
+                buf_start = i
             buf.append(line)
             continue
         in_callout = False
         if PARA_BREAK_RE.match(line):
-            flush()
+            flush(i)
             continue
+        if buf_start is None:
+            buf_start = i
         buf.append(line)
-    flush()
+    flush(len(lines))
     return paras
+
+
+def split_paragraphs(text: str) -> List[str]:
+    """Blank-line-delimited paragraphs, keeping fences/callouts atomic."""
+    return [p[2] for p in split_paragraphs_with_bounds(text.splitlines())]
 
 
 @dataclass
@@ -334,6 +393,15 @@ def extract_frontmatter_links(meta: dict) -> List[FrontmatterLink]:
 
 
 @dataclass
+class Callout:
+    type: str
+    title: str
+    text: str
+    line_start: int
+    line_end: int
+
+
+@dataclass
 class FragmentResult:
     status: str  # resolved | not_found | needs_context | out_of_scope
     path: str
@@ -342,52 +410,136 @@ class FragmentResult:
     line_end: Optional[int]
     text: Optional[str]
     content_hash: Optional[str]
-    candidates: Optional[list] = None  # for needs_context: ambiguous titles
+    candidates: Optional[list] = None  # for needs_context: ambiguous headings/paragraph matches
+    callouts: List[Callout] = field(default_factory=list)
+    internal_refs_outside_range: List[str] = field(default_factory=list)
+    truncated: bool = False
+
+
+def extract_callouts(raw_text: str, line_start: int, line_end: int) -> List[Callout]:
+    """Fragment-reader passport rule 6: a callout inside the range stays a
+    separate semantic block rather than blending into the surrounding
+    prose in `text` - callers that care about definitions/warnings/
+    examples specifically can look at `callouts` instead of re-parsing."""
+    lines = raw_text.splitlines()
+    out: List[Callout] = []
+    i = max(line_start - 1, 0)
+    stop = min(line_end - 1, len(lines))
+    while i < stop:
+        m = CALLOUT_RE.match(lines[i])
+        if not m:
+            i += 1
+            continue
+        start = i
+        body = [m.group(2)] if m.group(2) else []
+        i += 1
+        while i < stop and lines[i].strip().startswith(">"):
+            body.append(re.sub(r"^>\s?", "", lines[i]))
+            i += 1
+        out.append(Callout(m.group(1), (m.group(2) or "").strip(), "\n".join(body).strip(), start + 1, i))
+    return out
+
+
+def _internal_refs_outside(raw_text: str, line_start: int, line_end: int) -> List[str]:
+    """Fragment-reader passport rule 7, advisory half: a same-file heading/
+    block link (`[[#Heading]]`, `[[#^id]]`) found *inside* the range. This
+    module never auto-escalates status to `needs_context` over this - "is
+    the meaning actually ambiguous without it" is the judgment call the
+    passport leaves to the caller; it only surfaces the candidates."""
+    refs = []
+    for link in extract_wikilinks(slice_lines(raw_text, line_start, line_end)):
+        if link.target == "" and link.anchor:
+            refs.append(f"#{link.anchor}")
+    return refs
 
 
 def read_fragment(
-    vault_path: Path, rel_path: str, heading_query: Optional[str] = None
+    vault_path: Path,
+    rel_path: str,
+    heading_query: Optional[str] = None,
+    block_id: Optional[str] = None,
+    line_range: Optional[tuple] = None,
+    include_children: bool = False,
+    child_depth: int = 1,
+    max_chars: Optional[int] = None,
 ) -> FragmentResult:
+    """The addressed-reading primitive behind obsidian-fragment-reader
+    (§3.15), reused directly by obsidian-research/-revise/-link/-moc/-hub
+    rather than each re-implementing "read exactly this much". At most one
+    of `block_id` / `line_range` / `heading_query` should normally be
+    given; if more than one is passed, block_id wins, then line_range,
+    then heading_query - all three omitted reads the whole file, as
+    before.
+
+    States (algorithms.md §2 "Состояния reader"): `resolved`, `not_found`,
+    `needs_context` (ambiguous heading, or a block/paragraph match - not
+    reachable for block_id/line_range, which are unambiguous by
+    construction). `stale_address` does not apply: there is no cached
+    RAPTOR address to go stale against, every call re-parses the live file
+    fresh. `out_of_scope` is the caller's responsibility - this function
+    has no opinion on vault scope excludes; check before calling if that
+    matters (e.g. pathutil.is_excluded).
+    """
     full_path = Path(vault_path) / rel_path
     if not full_path.is_file():
         return FragmentResult("not_found", rel_path, None, None, None, None, None)
     raw = read_text(full_path)
     parsed = parse_frontmatter(raw)
     headings = parse_headings(parsed.body, parsed.body_start_line)
+    lines = raw.splitlines()
+    total_lines = len(lines)
+
+    def finish(status, h_path, ls, le, text, candidates=None):
+        callouts, refs, truncated = [], [], False
+        if status == "resolved" and ls is not None and le is not None:
+            callouts = extract_callouts(raw, ls, le)
+            refs = _internal_refs_outside(raw, ls, le)
+            if max_chars and text is not None and len(text) > max_chars:
+                text = text[:max_chars]
+                truncated = True
+        return FragmentResult(
+            status, rel_path, h_path, ls, le, text,
+            content_hash(text) if text is not None else None,
+            candidates, callouts, refs, truncated,
+        )
+
+    def heading_path_for_line(line_no: int) -> Optional[list]:
+        best = None
+        for h in headings:
+            if h.line_start <= line_no < h.line_end:
+                best = h  # later (more specific/deeper) containing heading wins
+        return list(best.path) if best else None
+
+    if block_id:
+        line_no = next(
+            (i for i, line in enumerate(lines, start=1)
+             if (m := BLOCK_ID_RE.search(line)) and m.group(1) == block_id),
+            None,
+        )
+        if line_no is None:
+            return finish("not_found", None, None, None, None)
+        paras = split_paragraphs_with_bounds(lines, base_line=1)
+        containing = next((p for p in paras if p[0] <= line_no < p[1]), None)
+        ps, pe = containing[:2] if containing else (line_no, line_no + 1)
+        return finish("resolved", heading_path_for_line(ps), ps, pe, slice_lines(raw, ps, pe))
+
+    if line_range:
+        ls, le = line_range
+        le = min(le, total_lines + 1)
+        if ls < 1 or ls > total_lines:
+            return finish("not_found", None, None, None, None)
+        return finish("resolved", heading_path_for_line(ls), ls, le, slice_lines(raw, ls, le))
 
     if heading_query is None:
-        return FragmentResult(
-            "resolved",
-            rel_path,
-            None,
-            1,
-            len(raw.splitlines()) + 1,
-            raw,
-            content_hash(raw),
-        )
+        return finish("resolved", None, 1, total_lines + 1, raw)
 
     matches = find_heading(headings, heading_query)
     if not matches:
-        return FragmentResult("not_found", rel_path, None, None, None, None, None)
+        return finish("not_found", None, None, None, None)
     if len(matches) > 1:
-        return FragmentResult(
-            "needs_context",
-            rel_path,
-            None,
-            None,
-            None,
-            None,
-            None,
-            candidates=[" > ".join(h.path) for h in matches],
-        )
+        return finish("needs_context", None, None, None, None,
+                       candidates=[" > ".join(h.path) for h in matches])
     h = matches[0]
-    text = own_text(raw, headings, h)
-    return FragmentResult(
-        "resolved",
-        rel_path,
-        list(h.path),
-        h.line_start,
-        h.line_end,
-        text,
-        content_hash(text),
-    )
+    depth = child_depth if include_children else 0
+    end_line = section_end_line(headings, h, depth)
+    return finish("resolved", list(h.path), h.line_start, end_line, slice_lines(raw, h.line_start, end_line))

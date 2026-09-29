@@ -74,7 +74,11 @@ def resolve_link_target(
     vault_path = Path(vault_path)
     raw = link_target.strip()
     if not raw:
-        return ResolvedTarget("not_found", None)
+        # [[#Heading]] / [[#^blockid]]: no note name before '#' means "this
+        # same file" in Obsidian, not an unresolved/missing target.
+        if not source_rel_path:
+            return ResolvedTarget("not_found", None)
+        return ResolvedTarget("resolved", source_rel_path)
 
     # 1. explicit path (contains a folder separator)
     if "/" in raw:
