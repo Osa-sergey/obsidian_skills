@@ -1,0 +1,11 @@
+.DS_Store
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+
+# Machine-local vault connections/registry are never committed:
+# ~/.claude/obsidian/vaults/*.yaml lives outside this repo entirely.
+# A project's own .claude/obsidian-vault.yaml is that project's concern,
+# not this repo's — but guard against ever adding one at the repo root.
+/.claude/obsidian-vault.yaml

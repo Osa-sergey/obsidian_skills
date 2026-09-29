@@ -1,0 +1,246 @@
+#!/usr/bin/env python3
+"""obsidian-vault: register vaults and connect projects to them.
+
+This is the "подключать скиллы к проектам и vaults" mechanism described in
+obsidian_research/docs/adr/ADR-0008-skill-distribution.md: the obsidian-*
+skills are installed once (user-level, ~/.claude/skills/), and each vault
+is registered once here; a project then "connects" with a two-line pointer
+file so the same installed skills work against any number of vaults
+without editing any skill code.
+
+Commands
+--------
+  obsidian-vault register <vault_id> --path DIR [--port 51361] [--force]
+      Register a vault profile at ~/.claude/obsidian/vaults/<vault_id>.yaml.
+
+  obsidian-vault list
+      List registered vaults and, for each, whether Omnisearch answers.
+
+  obsidian-vault connect <vault_id> [--project DIR]
+      Write DIR/.claude/obsidian-vault.yaml pointing at a registered vault.
+      DIR defaults to the current directory.
+
+  obsidian-vault doctor [<vault_id>]
+      Check filesystem access, Omnisearch reachability and the Dataview/
+      Bases/Canvas plugins for one vault (or all registered vaults) - the
+      G2/G4 "discover what's actually available" step from foundation.md.
+
+  obsidian-vault install-skills [--repo DIR]
+      Symlink skills/<name> from this repo into ~/.claude/skills/<name>,
+      so they are available in every Claude Code project immediately.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO_ROOT / "lib"))
+
+import yaml  # noqa: E402
+
+from obsidian_common.omnisearch import OmnisearchClient  # noqa: E402
+from obsidian_common.profile import REGISTRY_DIR, load_profile, registered_vaults  # noqa: E402
+
+USER_SKILLS_DIR = Path.home() / ".claude" / "skills"
+
+DEFAULT_PROFILE_TEMPLATE = """\
+vault_id: {vault_id}
+vault_path: {vault_path}
+
+omnisearch:
+  enabled: true
+  host: localhost
+  port: {port}
+
+scope:
+  exclude: [".obsidian", ".trash", ".git", ".DS_Store"]
+  traversal_exclude: ["day_notes", "daily", "archive"]
+
+naming:
+  moc_prefix: "MOC_"
+  hub_prefix: "HUB_"
+  project_codes: {{}}
+
+limits:
+  narrow: {{graph_depth: 1, max_notes: 12, max_neighbors: 5, max_tokens: 6000}}
+  deep:   {{graph_depth: 2, max_notes: 40, max_neighbors: 10, max_tokens: 30000}}
+
+language:
+  primary: ru
+
+# Controlled RU/EN/abbreviation expansion (S3). Only whole-query matches
+# against a canonical term or one of its variants get expanded; nothing is
+# invented at run time. Example:
+# term_variants:
+#   RAG: ["retrieval augmented generation", "ретривал", "РАГ"]
+term_variants: {{}}
+"""
+
+
+def cmd_register(args) -> int:
+    REGISTRY_DIR.mkdir(parents=True, exist_ok=True)
+    target = REGISTRY_DIR / f"{args.vault_id}.yaml"
+    if target.exists() and not args.force:
+        print(f"error: {target} already exists. Use --force to overwrite.", file=sys.stderr)
+        return 2
+    vault_path = Path(args.path).expanduser().resolve()
+    if not vault_path.is_dir():
+        print(f"error: {vault_path} is not a directory", file=sys.stderr)
+        return 2
+    if not (vault_path / ".obsidian").is_dir():
+        print(f"warning: {vault_path} has no .obsidian/ folder - registering anyway.", file=sys.stderr)
+    target.write_text(
+        DEFAULT_PROFILE_TEMPLATE.format(vault_id=args.vault_id, vault_path=vault_path, port=args.port),
+        encoding="utf-8",
+    )
+    print(f"registered: {args.vault_id} -> {target}")
+    print(f"vault_path: {vault_path}")
+    print("Next: obsidian-vault connect", args.vault_id, "--project <project dir>")
+    return 0
+
+
+def cmd_list(args) -> int:
+    vaults = registered_vaults()
+    if not vaults:
+        print("No vaults registered. Run: obsidian-vault register <id> --path <dir>")
+        return 0
+    for vault_id, path in vaults.items():
+        try:
+            profile = load_profile(path)
+            client = OmnisearchClient(profile.omnisearch.host, profile.omnisearch.port, timeout=2.0)
+            reachable = client.ping()
+        except Exception as exc:  # noqa: BLE001 - report, do not crash `list`
+            print(f"- {vault_id}: ERROR loading profile ({exc})")
+            continue
+        status = "omnisearch OK" if reachable else "omnisearch UNREACHABLE"
+        print(f"- {vault_id}: {profile.vault_path}  [{status}]  ({path})")
+    return 0
+
+
+def cmd_connect(args) -> int:
+    vaults = registered_vaults()
+    if args.vault_id not in vaults:
+        print(f"error: vault {args.vault_id!r} is not registered. Registered: {sorted(vaults)}", file=sys.stderr)
+        return 2
+    project_dir = Path(args.project or ".").expanduser().resolve()
+    claude_dir = project_dir / ".claude"
+    claude_dir.mkdir(parents=True, exist_ok=True)
+    link_path = claude_dir / "obsidian-vault.yaml"
+    if link_path.exists() and not args.force:
+        print(f"error: {link_path} already exists. Use --force to overwrite.", file=sys.stderr)
+        return 2
+    link_path.write_text(f"vault: {args.vault_id}\n", encoding="utf-8")
+    print(f"connected: {project_dir} -> vault {args.vault_id!r} (via {link_path})")
+    return 0
+
+
+def cmd_doctor(args) -> int:
+    vaults = registered_vaults()
+    targets = [args.vault_id] if args.vault_id else list(vaults)
+    if not targets:
+        print("No vaults registered.")
+        return 0
+    overall_ok = True
+    for vault_id in targets:
+        if vault_id not in vaults:
+            print(f"- {vault_id}: NOT REGISTERED")
+            overall_ok = False
+            continue
+        profile = load_profile(vaults[vault_id])
+        print(f"\n== {vault_id} ({profile.vault_path}) ==")
+
+        ok = profile.vault_path.is_dir()
+        print(f"  filesystem: {'OK' if ok else 'MISSING'}")
+        overall_ok &= ok
+
+        obsidian_dir = profile.vault_path / ".obsidian"
+        print(f"  .obsidian/: {'found' if obsidian_dir.is_dir() else 'not found'}")
+
+        client = OmnisearchClient(profile.omnisearch.host, profile.omnisearch.port, timeout=3.0)
+        reachable = client.ping()
+        print(f"  omnisearch http ({profile.omnisearch.host}:{profile.omnisearch.port}): "
+              f"{'reachable' if reachable else 'UNREACHABLE - enable it in Omnisearch settings, vault must be open'}")
+        overall_ok &= reachable
+
+        plugins_dir = obsidian_dir / "plugins"
+        installed = {p.name for p in plugins_dir.iterdir()} if plugins_dir.is_dir() else set()
+        for plugin in ("omnisearch", "dataview"):
+            print(f"  plugin {plugin}: {'installed' if plugin in installed else 'NOT installed'}")
+
+        community = obsidian_dir / "community-plugins.json"
+        if community.is_file():
+            enabled = set(json.loads(community.read_text(encoding="utf-8")))
+            for plugin in ("omnisearch", "dataview"):
+                print(f"  plugin {plugin} enabled: {plugin in enabled}")
+    return 0 if overall_ok else 1
+
+
+def cmd_install_skills(args) -> int:
+    repo = Path(args.repo or REPO_ROOT).resolve()
+    skills_dir = repo / "skills"
+    if not skills_dir.is_dir():
+        print(f"error: {skills_dir} not found", file=sys.stderr)
+        return 2
+    USER_SKILLS_DIR.mkdir(parents=True, exist_ok=True)
+    installed = []
+    for skill_dir in sorted(skills_dir.iterdir()):
+        if not (skill_dir / "SKILL.md").is_file():
+            continue
+        link = USER_SKILLS_DIR / skill_dir.name
+        if link.is_symlink() or link.exists():
+            if link.is_symlink() and link.resolve() == skill_dir.resolve():
+                installed.append((skill_dir.name, "already linked"))
+                continue
+            if not args.force:
+                installed.append((skill_dir.name, "SKIPPED - exists and is not our symlink, use --force"))
+                continue
+            if link.is_symlink() or link.is_file():
+                link.unlink()
+            else:
+                import shutil
+                shutil.rmtree(link)
+        link.symlink_to(skill_dir, target_is_directory=True)
+        installed.append((skill_dir.name, f"linked -> {skill_dir}"))
+    for name, status in installed:
+        print(f"- {name}: {status}")
+    return 0
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = ap.add_subparsers(dest="command", required=True)
+
+    p_reg = sub.add_parser("register", help="register a vault profile")
+    p_reg.add_argument("vault_id")
+    p_reg.add_argument("--path", required=True)
+    p_reg.add_argument("--port", type=int, default=51361)
+    p_reg.add_argument("--force", action="store_true")
+    p_reg.set_defaults(func=cmd_register)
+
+    p_list = sub.add_parser("list", help="list registered vaults")
+    p_list.set_defaults(func=cmd_list)
+
+    p_conn = sub.add_parser("connect", help="connect the current (or given) project to a vault")
+    p_conn.add_argument("vault_id")
+    p_conn.add_argument("--project", help="project directory (default: cwd)")
+    p_conn.add_argument("--force", action="store_true")
+    p_conn.set_defaults(func=cmd_connect)
+
+    p_doc = sub.add_parser("doctor", help="check filesystem/omnisearch/plugin availability")
+    p_doc.add_argument("vault_id", nargs="?")
+    p_doc.set_defaults(func=cmd_doctor)
+
+    p_inst = sub.add_parser("install-skills", help="symlink skills/* into ~/.claude/skills/")
+    p_inst.add_argument("--repo", help="repo root (default: this script's repo)")
+    p_inst.add_argument("--force", action="store_true")
+    p_inst.set_defaults(func=cmd_install_skills)
+
+    args = ap.parse_args()
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

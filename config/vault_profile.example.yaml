@@ -1,0 +1,59 @@
+# Example vault profile. Implements the "Общий профиль vault" described in
+# obsidian_research/docs/spec/foundation.md §2.2.
+#
+# You normally never hand-write this file: `bin/obsidian-vault register`
+# generates one at ~/.claude/obsidian/vaults/<vault_id>.yaml, and
+# `bin/obsidian-vault connect` points a project at it. This copy is here as
+# documentation and as a starting point if you want to hand-tune one (e.g.
+# add term_variants, or a project_codes dictionary).
+#
+# A project can also inline a full profile like this directly at
+# .claude/obsidian-vault.yaml instead of the two-line `vault: <id>` pointer,
+# if that project should never share its connection with any other project.
+
+vault_id: project_live
+vault_path: /Users/serg/Documents/vaults/project_live
+
+omnisearch:
+  enabled: true
+  # "localhost", not "127.0.0.1": Omnisearch's HTTP server has been observed
+  # binding IPv6 [::1] only - see lib/obsidian_common/omnisearch.py.
+  host: localhost
+  port: 51361
+  timeout: 5.0
+
+scope:
+  include: []  # empty = whole vault
+  # Hard excludes: never read, never returned by any skill.
+  exclude: [".obsidian", ".trash", ".git", ".DS_Store"]
+  # Soft excludes (defaults.md block C6): obsidian-context will still list
+  # a note under these folders if it's reached, but won't expand *from* it
+  # unless it was an explicit start note. Adjust to match this vault's own
+  # daily-note/archive folder names.
+  traversal_exclude: ["day_notes", "daily", "archive"]
+
+naming:
+  moc_prefix: "MOC_"
+  hub_prefix: "HUB_"
+  # REQ-FND-0001: when two projects independently want a file with the same
+  # title, this letter code goes right after the MOC_/HUB_ prefix, e.g.
+  # MOC_RAG_Индексация.md vs MOC_ML_Индексация.md.
+  project_codes: {}
+  #   RAG: "RAG"
+  #   nothy: "NTH"
+
+limits:
+  # defaults.md §11 "RAPTOR, лимиты и callouts" table + block C4.
+  narrow: {graph_depth: 1, max_notes: 12, max_neighbors: 5, max_tokens: 6000}
+  deep:   {graph_depth: 2, max_notes: 40, max_neighbors: 10, max_tokens: 30000}
+
+language:
+  primary: ru
+
+# S3: controlled RU/EN/abbreviation expansion for obsidian-search. A query
+# that exactly matches a canonical term OR one of its variants also
+# searches the other variants, tagged with provenance in the report. Never
+# auto-translated - only what's listed here.
+term_variants: {}
+#   RAG: ["retrieval augmented generation", "ретривал", "РАГ"]
+#   GraphRAG: ["граф-раг", "граф RAG"]
