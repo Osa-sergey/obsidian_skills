@@ -174,6 +174,37 @@ def propose_append_section(
     )
 
 
+def propose_append_subsection(
+    vault_path: Path, rel_path: str, parent_heading_query: str, new_subsection: str,
+    reason: str = "", sources=None,
+) -> Patch:
+    """Insert `new_subsection` (a complete heading block, e.g.
+    '### N. Name\\n\\n...') as the LAST child within
+    `parent_heading_query`'s full range - after every existing child
+    subsection, unlike propose_append_section, which appends to the
+    parent's own *leaf* text and only behaves correctly when the parent
+    heading has prose of its own. A parent like '## Этапы', whose real
+    content lives entirely inside '### N. Stage' children, has empty
+    own_text (own_text stops at the first child) - append_section would
+    silently insert right after the '## Этапы' line, i.e. *before* every
+    existing stage, not after the last one. Use this operation whenever
+    what you are adding is itself a heading meant to join existing
+    same-shaped children, not prose within the parent."""
+    raw = _read(vault_path, rel_path)
+    parsed = md.parse_frontmatter(raw)
+    headings = md.parse_headings(parsed.body, parsed.body_start_line)
+    heading = _resolve_heading(headings, parent_heading_query)
+    full_text = md.slice_lines(raw, heading.line_start, heading.line_end)
+    new_text = full_text.rstrip("\n") + "\n\n" + new_subsection.strip() + "\n"
+    diff = make_diff(full_text, new_text, f"{rel_path}#{parent_heading_query} (append subsection)")
+    return Patch(
+        new_change_id(), rel_path, "append_subsection",
+        {"parent_heading_query": parent_heading_query, "new_subsection": new_subsection},
+        based_on={"kind": "full_section", "heading_path": list(heading.path), "hash": region_hash(full_text)},
+        preview_diff=diff, reason=reason, sources=sources or [],
+    )
+
+
 def propose_managed_block(
     vault_path: Path, rel_path: str, block_id: str, new_body: str, skill_name: str,
     anchor_heading: Optional[str] = None, reason: str = "", sources=None,
@@ -289,6 +320,7 @@ def apply_patch(vault_path: Path, patch: Patch) -> ChangeRecord:
             "create_file": _apply_create_file,
             "replace_section": _apply_replace_section,
             "append_section": _apply_append_section,
+            "append_subsection": _apply_append_subsection,
             "managed_block": _apply_managed_block,
             "yaml_merge": _apply_yaml_merge,
             "ensure_block_id": _apply_ensure_block_id,
@@ -390,6 +422,28 @@ def _apply_append_section(vault_path: Path, patch: Patch) -> ChangeRecord:
     atomic_write(Path(vault_path) / patch.path, new_raw)
     return ChangeRecord(patch.change_id, patch.path, patch.op, "applied",
                          f"created new section {patch.params['heading_query']!r}", region_hash(new_raw))
+
+
+def _apply_append_subsection(vault_path: Path, patch: Patch) -> ChangeRecord:
+    raw = _read(vault_path, patch.path)
+    parsed = md.parse_frontmatter(raw)
+    headings = md.parse_headings(parsed.body, parsed.body_start_line)
+    heading = _resolve_heading(headings, patch.params["parent_heading_query"])
+    full_text = md.slice_lines(raw, heading.line_start, heading.line_end)
+    if region_hash(full_text) != patch.based_on["hash"]:
+        return ChangeRecord(patch.change_id, patch.path, patch.op, "conflict",
+                             "section changed since propose - rebuild the patch")
+    new_subsection = patch.params["new_subsection"].strip()
+    if new_subsection and new_subsection in full_text:
+        return ChangeRecord(patch.change_id, patch.path, patch.op, "unchanged",
+                             "subsection already present", region_hash(raw))
+    new_text = full_text.rstrip("\n") + "\n\n" + new_subsection + "\n"
+    lines = raw.splitlines()
+    new_lines = _splice_lines(lines, heading.line_start - 1, heading.line_end - 1, new_text.splitlines())
+    new_raw = "\n".join(new_lines) + ("\n" if raw.endswith("\n") else "")
+    atomic_write(Path(vault_path) / patch.path, new_raw)
+    return ChangeRecord(patch.change_id, patch.path, patch.op, "applied",
+                         f"appended subsection to {patch.params['parent_heading_query']!r}", region_hash(new_raw))
 
 
 def _apply_managed_block(vault_path: Path, patch: Patch) -> ChangeRecord:

@@ -18,7 +18,10 @@ applies to `skills/`/`lib/`/`bin/` just as much as to `docs/`.
 | 5 | [`obsidian-revise`](skills/obsidian-revise/SKILL.md) | **Implemented** | [§3.5](docs/spec/skills/05-obsidian-revise.md) |
 | 6 | [`obsidian-link`](skills/obsidian-link/SKILL.md) | **Implemented** | [§3.6](docs/spec/skills/06-obsidian-link.md) |
 | 7 | [`obsidian-metadata`](skills/obsidian-metadata/SKILL.md) | **Implemented** | [§3.7](docs/spec/skills/07-obsidian-metadata.md) |
-| 8–19 | moc, hub, workflow, query(-builder), semantic-search, retrieve, fragment-reader, evidence, qa, index-sync, gap-search | Not built | [full list](docs/spec/skills/index.md) |
+| 8 | [`obsidian-moc`](skills/obsidian-moc/SKILL.md) | **Implemented** | [§3.8](docs/spec/skills/08-obsidian-moc.md) |
+| 9 | [`obsidian-hub`](skills/obsidian-hub/SKILL.md) | **Implemented** | [§3.9](docs/spec/skills/09-obsidian-hub.md) |
+| 15 | [`obsidian-fragment-reader`](skills/obsidian-fragment-reader/SKILL.md) | **Implemented** | [§3.15](docs/spec/skills/15-obsidian-fragment-reader.md) |
+| 10–14, 16–19 | workflow, query(-builder), semantic-search, retrieve, evidence, qa, index-sync, gap-search | Not built | [full list](docs/spec/skills/index.md) |
 
 "Implemented" means: a `SKILL.md` plus working `scripts/`, tested against a
 real vault and a real Omnisearch server. It does not mean every open
