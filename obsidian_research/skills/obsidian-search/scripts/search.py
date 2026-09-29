@@ -165,23 +165,47 @@ def classify_match(queries: List[str], basename_no_ext: str, naming, signals: di
 
 
 def omnisearch_stage(profile: VaultProfile, queries: List[tuple], limit: int) -> tuple:
-    """Returns (merged_hits_by_path, provenance, unavailable: bool, error)."""
+    """Returns (merged_hits_by_path, provenance, unavailable: bool, error,
+    vault_mismatch_warning: Optional[str]).
+
+    Omnisearch's HTTP server answers for *every* vault currently open in
+    that Obsidian instance, so a hit's `vault` field has to be checked
+    against something - but that something must be the vault's real,
+    Obsidian-assigned name (its folder's basename: Obsidian does not offer
+    a separate "rename vault" independent of the folder), never
+    `profile.vault_id`. `vault_id` is a free-form local nickname the user
+    picks at `register` time purely to name the profile/registry entry
+    (`--profile <vault_id>`, `vault: <vault_id>` in a project's connection
+    file) - it is never sent to or echoed by Omnisearch. Comparing it
+    against `h.vault` directly (an earlier version of this function did)
+    silently drops every real hit whenever the two happen to differ, which
+    they very often will: reported and root-caused by a user who
+    registered a vault under a memorable vault_id that did not match its
+    folder name and got a confident, wrong "nothing found" with no error
+    at all. Real vault-name collisions across two *different* open vaults
+    that happen to share a folder basename are a known, narrower residual
+    risk this cannot fully resolve - Omnisearch's API exposes only a name,
+    not a full path, to disambiguate against.
+    """
     if not profile.omnisearch.enabled:
-        return {}, [], True, "omnisearch disabled in profile"
+        return {}, [], True, "omnisearch disabled in profile", None
     client = OmnisearchClient(
         profile.omnisearch.host, profile.omnisearch.port, profile.omnisearch.timeout
     )
+    expected_vault = profile.vault_path.name
     merged: Dict[str, dict] = {}
     provenance = []
+    raw_hit_total = 0
+    other_vaults_seen: set = set()
     for reason, q in queries:
         try:
             hits = client.search(q)
         except OmnisearchUnavailable as exc:
-            return merged, provenance, True, str(exc)
+            return merged, provenance, True, str(exc), None
+        raw_hit_total += len(hits)
         for h in hits:
-            if h.vault and profile.vault_id and h.vault != profile.vault_id:
-                # Omnisearch's HTTP server answers for *all* vaults open in
-                # this Obsidian instance; only keep the connected one.
+            if h.vault and h.vault != expected_vault:
+                other_vaults_seen.add(h.vault)
                 continue
             rel = h.path
             entry = merged.setdefault(
@@ -192,7 +216,17 @@ def omnisearch_stage(profile: VaultProfile, queries: List[tuple], limit: int) ->
             entry["score"] = max(entry["score"], h.score)
             entry["found_via"].append({"query": q, "reason": reason, "score": h.score})
         provenance.append({"query": q, "reason": reason, "hit_count": len(hits)})
-    return merged, provenance, False, None
+
+    vault_mismatch_warning = None
+    if raw_hit_total > 0 and not merged and other_vaults_seen:
+        vault_mismatch_warning = (
+            f"Omnisearch returned {raw_hit_total} hit(s) but none reported this vault's "
+            f"expected name {expected_vault!r} - it reported {sorted(other_vaults_seen)} instead. "
+            "The connected vault's folder may have been renamed/moved since it was registered, "
+            "or a different vault with overlapping content is what's actually open in Obsidian. "
+            "Run bin/obsidian-vault doctor to check the registered vault_path."
+        )
+    return merged, provenance, False, None, vault_mismatch_warning
 
 
 def fallback_search(vault_path, scope, queries: List[tuple]) -> Dict[str, dict]:
@@ -333,7 +367,7 @@ def main() -> int:
     queries = build_query_list(args.query, profile.term_variants)
     all_query_strings = [q for _, q in queries]
 
-    merged, provenance, unavailable, err = omnisearch_stage(profile, queries, limit)
+    merged, provenance, unavailable, err, vault_mismatch_warning = omnisearch_stage(profile, queries, limit)
     used_fallback = False
     if unavailable:
         used_fallback = True
@@ -372,6 +406,7 @@ def main() -> int:
         "omnisearch_unavailable": unavailable,
         "omnisearch_error": err,
         "used_fallback": used_fallback,
+        "vault_mismatch_warning": vault_mismatch_warning,
         "filters": filters,
         "limit": limit,
         "total_candidates_before_limit": len(hits),
@@ -387,10 +422,14 @@ def main() -> int:
     if unavailable:
         print(f"⚠️ **omnisearch_unavailable** — {err}\n\nИспользован резервный поиск по имени/title/aliases/H1 "
               "(без полнотекстового поиска по телу заметок).\n")
+    if vault_mismatch_warning:
+        print(f"⚠️ **vault_mismatch** — {vault_mismatch_warning}\n")
     if len(queries) > 1:
         print("Запросы:", ", ".join(f"`{q}`({r})" for r, q in queries), "\n")
     if not report_rows:
-        print("Ничего не найдено в разрешённом scope.")
+        print("Ничего не найдено в разрешённом scope."
+              + ("" if not vault_mismatch_warning else " (см. предупреждение vault_mismatch выше — "
+                 "похоже, дело не в отсутствии заметок)"))
         return 0
     print("| Заметка | Путь | Совпадение | По запросу | Пояснение |")
     print("|---|---|---|---|---|")

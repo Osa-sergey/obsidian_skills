@@ -108,8 +108,18 @@ def cmd_check_coverage(args, profile) -> int:
         print(json.dumps({"error": "omnisearch_disabled"}, ensure_ascii=False, indent=2, default=str))
         return 1
     client = OmnisearchClient(profile.omnisearch.host, profile.omnisearch.port, profile.omnisearch.timeout)
+    # Compare against the vault's real, Obsidian-assigned name (its folder's
+    # basename), never profile.vault_id - vault_id is a free-form local
+    # registry nickname Omnisearch never sees. Comparing against vault_id
+    # silently drops every real hit whenever the two differ (see
+    # omnisearch_stage's docstring in obsidian-search/scripts/search.py for
+    # the full story - reported and root-caused by a user hitting exactly
+    # this as a confident, silent "nothing found").
+    expected_vault = profile.vault_path.name
     results = {}
     unavailable = False
+    raw_hit_total = 0
+    other_vaults_seen: set = set()
     for term in terms:
         try:
             hits = client.search(term)
@@ -117,13 +127,27 @@ def cmd_check_coverage(args, profile) -> int:
             results[term] = {"error": "omnisearch_unavailable", "detail": str(exc)}
             unavailable = True
             continue
-        hits = [h for h in hits if not h.vault or not profile.vault_id or h.vault == profile.vault_id]
+        raw_hit_total += len(hits)
+        kept = []
+        for h in hits:
+            if h.vault and h.vault != expected_vault:
+                other_vaults_seen.add(h.vault)
+                continue
+            kept.append(h)
         results[term] = [
             {"path": h.path, "basename": h.basename, "score": h.score, "excerpt": clean_excerpt(h.excerpt)}
-            for h in hits[:5]
+            for h in kept[:5]
         ]
+    vault_mismatch_warning = None
+    if raw_hit_total > 0 and not any(results.values()) and other_vaults_seen:
+        vault_mismatch_warning = (
+            f"Omnisearch returned {raw_hit_total} hit(s) but none reported this vault's "
+            f"expected name {expected_vault!r} - it reported {sorted(other_vaults_seen)} instead. "
+            "Run bin/obsidian-vault doctor to check the registered vault_path."
+        )
     payload = {
         "terms_checked": terms, "results": results, "omnisearch_unavailable": unavailable,
+        "vault_mismatch_warning": vault_mismatch_warning,
         "note": ("Absence of a hit does not by itself prove a gap (REQ-RET-0004) - "
                  "a term can be covered under different wording, or inside a section "
                  "that ranks low on lexical search. Read what *is* found before concluding."),

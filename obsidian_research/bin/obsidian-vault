@@ -98,6 +98,15 @@ def cmd_register(args) -> int:
     )
     print(f"registered: {args.vault_id} -> {target}")
     print(f"vault_path: {vault_path}")
+    if args.vault_id != vault_path.name:
+        print(
+            f"note: vault_id ({args.vault_id!r}) differs from the vault's real "
+            f"folder name ({vault_path.name!r}) - that's fine, vault_id is only a "
+            f"local nickname for this registry entry (used for --profile/`vault:` "
+            f"lookups). Omnisearch itself never sees vault_id, only the folder "
+            f"name, and the obsidian-* skills already filter Omnisearch results "
+            f"by the folder name, not vault_id, so search still works correctly."
+        )
     print("Next: obsidian-vault connect", args.vault_id, "--project <project dir>")
     return 0
 
