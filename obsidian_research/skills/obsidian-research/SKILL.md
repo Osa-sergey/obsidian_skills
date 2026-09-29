@@ -8,8 +8,14 @@ description: Research a question against notes already in a connected Obsidian v
 Turns a set of *read* materials into a research note: synthesis, findings,
 comparisons, contradictions, gaps, and recommendations, each traceable to a
 specific file and heading. Full spec:
-`obsidian_research/docs/spec/skills/03-obsidian-research.md` (US-003);
-defaults `R1–R6` in `obsidian_research/docs/spec/defaults.md`.
+`docs/spec/skills/03-obsidian-research.md` (US-003); defaults `R1–R6` in
+`docs/spec/defaults.md` (both relative to this project's root, the
+`obsidian_research/` folder).
+
+This skill (and the two below) run from
+`~/.claude/skills/<name>/scripts/<file>.py` regardless of which project
+you're currently in — use that path directly, not one relative to the
+current working directory (which is whatever project you're actually in).
 
 **The comparison and judgment work is yours, not a script's** — no script
 can reliably decide whether two notes genuinely contradict each other or
@@ -23,18 +29,20 @@ Use it for that; do the reading and reasoning yourself.
 `obsidian-evidence`, `obsidian-qa`) are not built in this project yet.
 Until they exist, this skill assembles its own material directly:
 
-1. **Find candidates** — call `obsidian-search` (`scripts/search.py`) for
-   the question's key terms, `--mode deep`.
+1. **Find candidates** — call `obsidian-search`
+   (`~/.claude/skills/obsidian-search/scripts/search.py`) for the
+   question's key terms, `--mode deep`.
 2. **Gather their neighborhood** — call `obsidian-context`
-   (`scripts/context.py`) from the strongest candidates, `--mode deep`, to
-   catch related notes that don't rank high on text search alone.
+   (`~/.claude/skills/obsidian-context/scripts/context.py`) from the
+   strongest candidates, `--mode deep`, to catch related notes that don't
+   rank high on text search alone.
 3. **Read addressed fragments, not whole vaults** — for each candidate
    worth checking, read its `## Суть` first (via `obsidian-context
    --preview` or `research_note.py fragment --heading Суть`), then pull
    the specific sections that actually bear on the question:
 
    ```bash
-   python3 skills/obsidian-research/scripts/research_note.py fragment \
+   python3 ~/.claude/skills/obsidian-research/scripts/research_note.py fragment \
      --path "zettelkasten/notes/GraphRAG (Microsoft).md" --heading "Краткое описание"
    ```
 
@@ -50,7 +58,7 @@ Until they exist, this skill assembles its own material directly:
    Before writing the note, validate it against the live vault:
 
    ```bash
-   python3 skills/obsidian-research/scripts/research_note.py validate --evidence evidence.json
+   python3 ~/.claude/skills/obsidian-research/scripts/research_note.py validate --evidence evidence.json
    ```
 
    This catches a hallucinated path or a heading that doesn't exist —
@@ -61,7 +69,7 @@ Until they exist, this skill assembles its own material directly:
    external publication, that's one independent basis, not two:
 
    ```bash
-   python3 skills/obsidian-research/scripts/research_note.py dedup-sources --sources sources.json
+   python3 ~/.claude/skills/obsidian-research/scripts/research_note.py dedup-sources --sources sources.json
    ```
 
    A `confirmed_same_source` group (same URL) can be collapsed outright; a
@@ -71,7 +79,7 @@ Until they exist, this skill assembles its own material directly:
 6. **Render the note** once the content is settled:
 
    ```bash
-   python3 skills/obsidian-research/scripts/research_note.py render \
+   python3 ~/.claude/skills/obsidian-research/scripts/research_note.py render \
      --findings findings.json --out "PARA/resources/Research - <topic>.md"
    ```
 

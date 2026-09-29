@@ -12,8 +12,13 @@ reached through. It does **not** read note bodies (beyond an optional cheap
 preview, clearly marked as such) and it does **not** judge which neighbor
 actually matters — that reading and that judgment happen afterward, with
 `Read`/`obsidian-research`, using the paths this returns. Full spec:
-`obsidian_research/docs/spec/skills/02-obsidian-context.md` (US-002);
-defaults `C1–C6` in `obsidian_research/docs/spec/defaults.md`.
+`docs/spec/skills/02-obsidian-context.md` (US-002); defaults `C1–C6` in
+`docs/spec/defaults.md` (both relative to this project's root, the
+`obsidian_research/` folder).
+
+This skill runs from `~/.claude/skills/obsidian-context/scripts/context.py`
+regardless of which project you're currently in — use that path directly,
+not one relative to the current working directory.
 
 ## Depth means graph hops, not folders or headings
 
@@ -28,9 +33,9 @@ Start from a path `obsidian-search` gave you, or a note title if you're
 reasonably sure it's unique:
 
 ```bash
-python3 skills/obsidian-context/scripts/context.py --start "zettelkasten/notes/GraphRAG (Microsoft).md" --mode deep --direction both
-python3 skills/obsidian-context/scripts/context.py --start "Заметка A,Заметка B" --depth 2 --direction out
-python3 skills/obsidian-context/scripts/context.py --start "MOC Python" --preview   # cheap '## Суть'/summary hint per node
+python3 ~/.claude/skills/obsidian-context/scripts/context.py --start "zettelkasten/notes/GraphRAG (Microsoft).md" --mode deep --direction both
+python3 ~/.claude/skills/obsidian-context/scripts/context.py --start "Заметка A,Заметка B" --depth 2 --direction out
+python3 ~/.claude/skills/obsidian-context/scripts/context.py --start "MOC Python" --preview   # cheap '## Суть'/summary hint per node
 ```
 
 - `--mode narrow` (default: depth 1, ≤12 notes, ≤5 neighbors/node) is for

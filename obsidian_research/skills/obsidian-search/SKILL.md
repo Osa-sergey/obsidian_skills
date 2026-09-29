@@ -9,25 +9,34 @@ Finds candidate notes and reports *where* they were found and *why* it's a
 match — it never reads a whole note or judges relevance beyond that. Reading
 and judging relevance are the next skills' job (obsidian-context,
 obsidian-research) or a plain `Read` call once you have a path. Full spec:
-`obsidian_research/docs/spec/skills/01-obsidian-search.md` (US-001);
-defaults `S1–S6` and `REQ-RET-0003` in `obsidian_research/docs/spec/defaults.md`.
+`docs/spec/skills/01-obsidian-search.md` (US-001); defaults `S1–S6` and
+`REQ-RET-0003` in `docs/spec/defaults.md` (both paths relative to this
+project's root, i.e. the `obsidian_research/` folder — see below).
 
 ## Before the first call
 
-This skill needs a vault profile. If you don't already know one is
-connected for this project, run:
+This skill runs from `~/.claude/skills/obsidian-search/scripts/search.py`
+regardless of which project you're in — that path is stable once
+`install-skills` has run, so use it directly rather than a path relative to
+the current working directory (the working directory is whatever project
+you're actually in, not this skill's own folder).
+
+`bin/obsidian-vault` (setup only: register/connect/doctor) is *not*
+symlinked the same way, so resolve this project's root from the
+already-stable skill symlink first:
 
 ```bash
-python3 bin/obsidian-vault list
+OBS_ROOT="$(cd "$(dirname "$(readlink -f ~/.claude/skills/obsidian-search)")/.." && pwd)"
+python3 "$OBS_ROOT/bin/obsidian-vault" list
 ```
 
-If nothing is connected here, either the project already has
-`.claude/obsidian-vault.yaml` pointing at a registered vault, or you need to
-register/connect one:
+If the current project isn't connected to a vault yet, either it already
+has `.claude/obsidian-vault.yaml` pointing at a registered vault, or you
+need to register/connect one:
 
 ```bash
-python3 bin/obsidian-vault register <vault_id> --path /path/to/vault --port 51361
-python3 bin/obsidian-vault connect <vault_id> --project .
+python3 "$OBS_ROOT/bin/obsidian-vault" register <vault_id> --path /path/to/vault --port 51361
+python3 "$OBS_ROOT/bin/obsidian-vault" connect <vault_id> --project .
 ```
 
 Ask the user for the vault path/port if you don't have it — don't guess a
@@ -38,9 +47,9 @@ the one connected to the current project.
 ## Running a text search
 
 ```bash
-python3 skills/obsidian-search/scripts/search.py --query "GraphRAG обновление графа" --mode deep
-python3 skills/obsidian-search/scripts/search.py --query "python" --filters tag=MOC,folder=zettelkasten
-python3 skills/obsidian-search/scripts/search.py --query "GraphRAG" --format json   # for programmatic use
+python3 ~/.claude/skills/obsidian-search/scripts/search.py --query "GraphRAG обновление графа" --mode deep
+python3 ~/.claude/skills/obsidian-search/scripts/search.py --query "python" --filters tag=MOC,folder=zettelkasten
+python3 ~/.claude/skills/obsidian-search/scripts/search.py --query "GraphRAG" --format json   # for programmatic use
 ```
 
 - `--mode narrow` (default) is for "find this one specific note" — top 5,
@@ -61,8 +70,8 @@ python3 skills/obsidian-search/scripts/search.py --query "GraphRAG" --format jso
 ## Listing a folder with no query (`REQ-RET-0003`)
 
 ```bash
-python3 skills/obsidian-search/scripts/search.py --folder "PARA/projects" --recursive true
-python3 skills/obsidian-search/scripts/search.py --folder "PARA/projects" --recursive false
+python3 ~/.claude/skills/obsidian-search/scripts/search.py --folder "PARA/projects" --recursive true
+python3 ~/.claude/skills/obsidian-search/scripts/search.py --folder "PARA/projects" --recursive false
 ```
 
 This never touches Omnisearch and never truncates to a top-k — "all the
