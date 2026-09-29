@@ -10,8 +10,12 @@ script *does* do: report which of the 19 skills actually exist to route
 to right now (the roster keeps changing as more get built), and turn a
 pile of ChangeRecord-shaped JSON from a multi-skill run into the one
 consolidated "Итог запуска" the passport requires (result-formats.md) -
-including the mandatory index_dirty flag, since obsidian-index-sync
-(skill 18) is not built in this project yet.
+including the mandatory index_dirty flag: obsidian-index-sync (skill 18)
+is built (see its own SKILL.md), but this script still does not call it
+automatically - a write skill's caller is responsible for invoking
+index-sync itself after a successfully applied batch (CLAUDE.md
+invariant 6), this script only aggregates whatever ChangeRecords (index
+sync's included) it's given.
 
 Subcommands
 -----------
@@ -117,10 +121,13 @@ def cmd_summarize_run(args) -> int:
         "all_ok": all_ok,
         "index_dirty": any_applied,
         "index_dirty_note": (
-            "obsidian-index-sync (skill 18) is not built in this project - "
-            "if any record above is 'applied', the vault's semantic index (if "
-            "any exists at all) does not reflect it. Say this in the final "
-            "report; never imply search/index freshness after a write."
+            "one or more applied writes above - this aggregator has no way to "
+            "tell from a bare ChangeRecord (path/operation/status/detail) "
+            "whether obsidian-index-sync already ran for them, so it defaults "
+            "to assuming dirty. Run obsidian-index-sync for every applied "
+            "path (CLAUDE.md invariant 6) and report its actual outcome "
+            "before claiming the semantic index is current - do not clear "
+            "this flag just because it's inconvenient."
             if any_applied else
             "no applied writes in this run - nothing to resync."
         ),

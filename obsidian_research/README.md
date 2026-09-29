@@ -24,7 +24,10 @@ applies to `skills/`/`lib/`/`bin/` just as much as to `docs/`.
 | 15 | [`obsidian-fragment-reader`](skills/obsidian-fragment-reader/SKILL.md) | **Implemented** | [§3.15](docs/spec/skills/15-obsidian-fragment-reader.md) |
 | 17 | [`obsidian-qa`](skills/obsidian-qa/SKILL.md) | **Implemented** | [§3.17](docs/spec/skills/17-obsidian-qa.md) |
 | 19 | [`obsidian-gap-search`](skills/obsidian-gap-search/SKILL.md) | **Implemented** | [§3.19](docs/spec/skills/19-obsidian-gap-search.md) |
-| 11–14, 16, 18 | query, query-builder, semantic-search, retrieve, evidence, index-sync | Not built | [full list](docs/spec/skills/index.md) |
+| 13 | [`obsidian-semantic-search`](skills/obsidian-semantic-search/SKILL.md) | **Implemented** | [§3.13](docs/spec/skills/13-obsidian-semantic-search.md) |
+| 14 | [`obsidian-retrieve`](skills/obsidian-retrieve/SKILL.md) | **Implemented** | [§3.14](docs/spec/skills/14-obsidian-retrieve.md) |
+| 18 | [`obsidian-index-sync`](skills/obsidian-index-sync/SKILL.md) | **Implemented** | [§3.18](docs/spec/skills/18-obsidian-index-sync.md) |
+| 11, 12, 16 | query, query-builder, evidence | Not built | [full list](docs/spec/skills/index.md) |
 
 This table is a snapshot - `python3 skills/obsidian-workflow/scripts/workflow.py list-skills` checks the roster live against what's actually installed, so it can't go stale the way this table can.
 
@@ -83,6 +86,109 @@ Omnisearch server currently answers.
 This machine already has `project_live` registered and this folder itself
 connected to it (dogfooding this project's own tooling — see the git log).
 
+## Semantic search setup (skills 13/14/18)
+
+Skills 13 (`obsidian-semantic-search`), 14 (`obsidian-retrieve`) and 18
+(`obsidian-index-sync`) need two external services beyond Omnisearch —
+neither is optional-by-code for indexing, though each degrades explicitly
+(`embeddings_unavailable`/`vectorstore_unavailable`/extractive-fallback
+summaries) rather than silently pretending to work. See
+[ADR-0009](docs/adr/ADR-0009-semantic-search-backend.md) for why these two
+specifically.
+
+**1. Qdrant** — a long-running Docker container (default `vectorstore.mode:
+http` in the vault profile). Start it once:
+
+```bash
+mkdir -p ~/.claude/obsidian/qdrant_storage
+docker run -d \
+  --name obsidian-qdrant \
+  -p 6333:6333 -p 6334:6334 \
+  -v ~/.claude/obsidian/qdrant_storage:/qdrant/storage \
+  --restart unless-stopped \
+  qdrant/qdrant:latest
+
+# sanity check
+curl -s http://127.0.0.1:6333/ | python3 -m json.tool
+```
+
+No Docker available? Set `vectorstore.mode: local` in the vault profile
+instead — falls back to an embedded, in-process `QdrantClient(path=...)`,
+no server needed, data under `~/.claude/obsidian/index/<vault_id>`.
+
+**2. LM Studio** — a local OpenAI-compatible server (`http://127.0.0.1:1234`
+by default) with **two separate models loaded**, since they serve two
+different endpoints:
+
+| Model role | Endpoint | Default model name | Used by |
+|---|---|---|---|
+| Embeddings | `/v1/embeddings` | `qwen3-embedding-0.6b-mlx` | 13/14/18 (required — indexing is skipped without it) |
+| Summarizer | `/v1/chat/completions` | `gpt-oss-20b-claude-4.5-sonnet-high-reasoning-distill-mlx` | 18 only (optional — section/article nodes fall back to an extractive stand-in without it, see `summary_source` in the payload) |
+
+Load both from LM Studio's own GUI (Developer → Server tab), not just
+`lms load`/`lms ps` — a real operational finding from setting this up: the
+CLI can report a model loaded while the HTTP server serving that port still
+answers `"No models loaded"` for it. If LM Studio has an API key configured
+(its recent-versions default), every request needs
+`Authorization: Bearer <token>`.
+
+```bash
+# sanity check both models are actually being served (not just "loaded")
+export LM_API_TOKEN=sk-...   # only if LM Studio has API key auth on
+
+curl -s http://127.0.0.1:1234/v1/models -H "Authorization: Bearer $LM_API_TOKEN" | python3 -m json.tool
+
+curl -s http://127.0.0.1:1234/v1/embeddings \
+  -H "Authorization: Bearer $LM_API_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"model": "qwen3-embedding-0.6b-mlx", "input": ["ping"]}' | python3 -m json.tool
+
+curl -s http://127.0.0.1:1234/v1/chat/completions \
+  -H "Authorization: Bearer $LM_API_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"model": "gpt-oss-20b-claude-4.5-sonnet-high-reasoning-distill-mlx", "messages": [{"role":"user","content":"ping"}], "max_tokens": 16}' \
+  | python3 -m json.tool
+```
+
+**3. Vault profile** — add `embeddings:`/`summarizer:`/`vectorstore:`
+sections to `~/.claude/obsidian/vaults/<id>.yaml` (schema:
+`lib/obsidian_common/profile.py`'s `EmbeddingsConfig`/`SummarizerConfig`/
+`VectorStoreConfig`):
+
+```yaml
+embeddings:
+  enabled: true
+  host: 127.0.0.1
+  port: 1234
+  model: qwen3-embedding-0.6b-mlx
+  api_key: "sk-..."   # blank if LM Studio has no API key configured
+
+summarizer:
+  enabled: true        # false = index-sync always uses the extractive fallback
+  host: 127.0.0.1
+  port: 1234
+  model: gpt-oss-20b-claude-4.5-sonnet-high-reasoning-distill-mlx
+  api_key: "sk-..."
+
+vectorstore:
+  enabled: true
+  mode: http            # or "local" for the no-Docker embedded fallback
+  host: 127.0.0.1
+  port: 6333
+  collection_prefix: raptor
+```
+
+Once all three are up, a one-off Python check from this project's root
+confirms the whole chain before running any of skills 13/14/18:
+
+```bash
+python3 -c "
+from lib.obsidian_common import profile, embeddings, summarizer, vectorstore as vs
+p = profile.load_profile('$HOME/.claude/obsidian/vaults/<id>.yaml')
+print('qdrant:    ', vs.ping(p))
+print('embeddings:', embeddings.EmbeddingClient(host=p.embeddings.host, port=p.embeddings.port, model=p.embeddings.model, api_key=p.embeddings.api_key).ping())
+print('summarizer:', summarizer.LLMSummarizer(host=p.summarizer.host, port=p.summarizer.port, model=p.summarizer.model, api_key=p.summarizer.api_key).ping())
+"
+```
+
 ## Adding skill 4+
 
 Follow the same shape: `skills/<name>/SKILL.md` (frontmatter `name` +
@@ -98,10 +204,13 @@ project is the dogfood case for its own process.
 
 ## Requirements
 
-Python 3.9+, `pyyaml`. No other third-party dependencies — the Omnisearch
-client uses `urllib` from the standard library on purpose, and the S6
-fallback (filename/title/alias/H1 matching when Omnisearch is down) is
-pure Python. That fallback intentionally does not also grep full note
-bodies; it trades recall for having no extra dependency and says so in its
-own report (`omnisearch_unavailable`) rather than pretending to be a full
-substitute for a normal run.
+Python 3.9+, `pip install -r requirements.txt` (`pyyaml`, `qdrant-client`
+— the latter only for skills 13/14/18, see "Semantic search setup" above).
+Every HTTP client in this project (Omnisearch, LM Studio embeddings/
+summarizer) uses `urllib` from the standard library on purpose, not a
+third-party HTTP/ML library — the S6 fallback (filename/title/alias/H1
+matching when Omnisearch is down) is pure Python too. That fallback
+intentionally does not also grep full note bodies; it trades recall for
+having no extra dependency and says so in its own report
+(`omnisearch_unavailable`) rather than pretending to be a full substitute
+for a normal run.

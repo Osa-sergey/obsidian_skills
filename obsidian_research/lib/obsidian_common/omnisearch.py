@@ -112,3 +112,36 @@ class OmnisearchClient:
             return True
         except OmnisearchUnavailable:
             return False
+
+
+def filter_by_vault(hits: List[OmnisearchHit], expected_vault: str) -> "tuple[List[OmnisearchHit], Optional[str]]":
+    """Filters hits down to the ones actually reporting `expected_vault`
+    (see OmnisearchClient.search - Omnisearch answers for *every* vault
+    open in the same Obsidian instance) and flags the case that used to be
+    a silent, confusing "nothing found": raw hits existed but every one of
+    them reported a different vault name, which almost always means
+    `expected_vault` (normally `profile.vault_path.name`, never
+    `profile.vault_id` - see the vault_id/vault-name distinction this was
+    root-caused from) no longer matches what Obsidian actually reports,
+    not that the vault genuinely has no matches. Returns
+    (filtered_hits, warning_or_None). Callers with their own merge/ranking
+    shape (obsidian-search, obsidian-gap-search) keep their own inline
+    version of this same check for now; new callers should use this one
+    instead of re-deriving it a third time."""
+    filtered = []
+    other_vaults_seen: set = set()
+    for h in hits:
+        if h.vault and h.vault != expected_vault:
+            other_vaults_seen.add(h.vault)
+            continue
+        filtered.append(h)
+    warning = None
+    if hits and not filtered and other_vaults_seen:
+        warning = (
+            f"Omnisearch returned {len(hits)} hit(s) but none reported this vault's "
+            f"expected name {expected_vault!r} - it reported {sorted(other_vaults_seen)} instead. "
+            "The connected vault's folder may have been renamed/moved since it was registered, "
+            "or a different vault with overlapping content is what's actually open in Obsidian. "
+            "Run bin/obsidian-vault doctor to check the registered vault_path."
+        )
+    return filtered, warning

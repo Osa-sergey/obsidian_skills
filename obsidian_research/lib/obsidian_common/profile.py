@@ -33,6 +33,13 @@ import yaml
 from .frontmatter_ops import DEFAULT_VOCAB
 
 REGISTRY_DIR = Path.home() / ".claude" / "obsidian" / "vaults"
+# ADR-0009: default home for the RAPTOR index when vectorstore.mode is
+# "local" (embedded QdrantClient(path=...), no server) - one subfolder per
+# vault_id, shared by every project connected to that vault, sibling to
+# REGISTRY_DIR, never inside the vault or a project's git repo. The default
+# mode is "http" against a long-running Qdrant Docker container instead;
+# this path only matters when a profile opts into "local".
+INDEX_STATE_DIR = Path.home() / ".claude" / "obsidian" / "index"
 PROJECT_LINK_RELPATH = Path(".claude") / "obsidian-vault.yaml"
 MAX_UPWARD_SEARCH = 8  # how many parent directories to check for a project link
 
@@ -91,6 +98,62 @@ class ManagedFoldersConfig:
 
 
 @dataclasses.dataclass
+class EmbeddingsConfig:
+    # ADR-0009: a local OpenAI-compatible HTTP server (LM Studio), not an
+    # embedding library inside this project - keeps obsidian_research a
+    # thin HTTP client (same shape as OmnisearchConfig) instead of pulling
+    # in PyTorch. Dimension is deliberately not configured here: it is
+    # read from the server's own first real response and pinned into the
+    # vector store's collection metadata, so a silent model swap can't
+    # silently corrupt an index built at a different width.
+    enabled: bool = True
+    host: str = "127.0.0.1"
+    port: int = 1234
+    model: str = "qwen3-embedding-0.6b-mlx"
+    api_key: str = ""
+    timeout: float = 30.0
+
+
+@dataclasses.dataclass
+class SummarizerConfig:
+    # Same LM Studio instance as embeddings (usually - same host/port), a
+    # different loaded model: a chat-completions model used to generate
+    # real section/subsection/article summaries in
+    # obsidian_common.raptor.fill_summaries(), replacing the crude
+    # extractive stand-in (title + first chunk). Disabled by default:
+    # index-sync must work (with the honest extractive fallback) even when
+    # no summarizer model is configured or loaded - see raptor.py's
+    # summary_source field.
+    enabled: bool = False
+    host: str = "127.0.0.1"
+    port: int = 1234
+    model: str = "gpt-oss-20b-claude-4.5-sonnet-high-reasoning-distill-mlx"
+    api_key: str = ""
+    timeout: float = 120.0
+    temperature: float = 0.3
+    max_tokens: int = 2048
+
+
+@dataclasses.dataclass
+class VectorStoreConfig:
+    # ADR-0009 (revised): Qdrant reached over HTTP by default - a
+    # long-running `qdrant/qdrant` Docker container, not the in-process
+    # `QdrantClient(path=...)` embedded mode the ADR originally started
+    # with. `mode` picks which: "http" uses host/port; "local" keeps the
+    # embedded-mode fallback (path on disk, None = the default global
+    # location under VaultProfile.vector_store_path, shared by every
+    # project connected to this vault_id - W5: index state lives outside
+    # the vault's own notes and outside any per-project git repo, exactly
+    # like the vault registry entry itself).
+    enabled: bool = True
+    mode: str = "http"
+    host: str = "127.0.0.1"
+    port: int = 6333
+    path: Optional[str] = None
+    collection_prefix: str = "raptor"
+
+
+@dataclasses.dataclass
 class LimitsConfig:
     # defaults.md §11 "RAPTOR, лимиты и callouts" table, narrow/deep rows,
     # and block C4. RAPTOR-specific fields (top-k) are kept here too so the
@@ -114,12 +177,21 @@ class VaultProfile:
     vocab: dict = dataclasses.field(default_factory=lambda: dict(DEFAULT_VOCAB))
     language_primary: str = "ru"
     term_variants: dict = dataclasses.field(default_factory=dict)
+    embeddings: EmbeddingsConfig = dataclasses.field(default_factory=EmbeddingsConfig)
+    summarizer: SummarizerConfig = dataclasses.field(default_factory=SummarizerConfig)
+    vectorstore: VectorStoreConfig = dataclasses.field(default_factory=VectorStoreConfig)
     source_path: Optional[Path] = None  # where this profile was loaded from
 
     def limits_for(self, mode: str) -> LimitsConfig:
         if mode not in ("narrow", "deep"):
             raise ValueError(f"mode must be 'narrow' or 'deep', got {mode!r}")
         return self.limits_narrow if mode == "narrow" else self.limits_deep
+
+    @property
+    def vector_store_path(self) -> Path:
+        if self.vectorstore.path:
+            return Path(self.vectorstore.path).expanduser()
+        return INDEX_STATE_DIR / self.vault_id
 
 
 def _dict_to_profile(data: dict, source_path: Optional[Path]) -> VaultProfile:
@@ -191,6 +263,38 @@ def _dict_to_profile(data: dict, source_path: Optional[Path]) -> VaultProfile:
 
     language_cfg = data.get("language", {}) or {}
 
+    emb_cfg = data.get("embeddings", {}) or {}
+    embeddings = EmbeddingsConfig(
+        enabled=emb_cfg.get("enabled", True),
+        host=emb_cfg.get("host", "127.0.0.1"),
+        port=int(emb_cfg.get("port", 1234)),
+        model=emb_cfg.get("model", "qwen3-embedding-0.6b-mlx"),
+        api_key=emb_cfg.get("api_key", ""),
+        timeout=float(emb_cfg.get("timeout", 30.0)),
+    )
+
+    sum_cfg = data.get("summarizer", {}) or {}
+    summarizer = SummarizerConfig(
+        enabled=sum_cfg.get("enabled", False),
+        host=sum_cfg.get("host", "127.0.0.1"),
+        port=int(sum_cfg.get("port", 1234)),
+        model=sum_cfg.get("model", "gpt-oss-20b-claude-4.5-sonnet-high-reasoning-distill-mlx"),
+        api_key=sum_cfg.get("api_key", ""),
+        timeout=float(sum_cfg.get("timeout", 120.0)),
+        temperature=float(sum_cfg.get("temperature", 0.3)),
+        max_tokens=int(sum_cfg.get("max_tokens", 2048)),
+    )
+
+    vs_cfg = data.get("vectorstore", {}) or {}
+    vectorstore = VectorStoreConfig(
+        enabled=vs_cfg.get("enabled", True),
+        mode=vs_cfg.get("mode", "http"),
+        host=vs_cfg.get("host", "127.0.0.1"),
+        port=int(vs_cfg.get("port", 6333)),
+        path=vs_cfg.get("path"),
+        collection_prefix=vs_cfg.get("collection_prefix", "raptor"),
+    )
+
     return VaultProfile(
         vault_id=vault_id,
         vault_path=vault_path,
@@ -203,6 +307,9 @@ def _dict_to_profile(data: dict, source_path: Optional[Path]) -> VaultProfile:
         vocab=vocab,
         language_primary=language_cfg.get("primary", "ru"),
         term_variants=dict(data.get("term_variants", {}) or {}),
+        embeddings=embeddings,
+        summarizer=summarizer,
+        vectorstore=vectorstore,
         source_path=source_path,
     )
 
