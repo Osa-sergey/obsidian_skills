@@ -22,8 +22,9 @@ applies to `skills/`/`lib/`/`bin/` just as much as to `docs/`.
 | 9 | [`obsidian-hub`](skills/obsidian-hub/SKILL.md) | **Implemented** | [§3.9](docs/spec/skills/09-obsidian-hub.md) |
 | 10 | [`obsidian-workflow`](skills/obsidian-workflow/SKILL.md) | **Implemented** | [§3.10](docs/spec/skills/10-obsidian-workflow.md) |
 | 15 | [`obsidian-fragment-reader`](skills/obsidian-fragment-reader/SKILL.md) | **Implemented** | [§3.15](docs/spec/skills/15-obsidian-fragment-reader.md) |
+| 17 | [`obsidian-qa`](skills/obsidian-qa/SKILL.md) | **Implemented** | [§3.17](docs/spec/skills/17-obsidian-qa.md) |
 | 19 | [`obsidian-gap-search`](skills/obsidian-gap-search/SKILL.md) | **Implemented** | [§3.19](docs/spec/skills/19-obsidian-gap-search.md) |
-| 11–14, 16–18 | query, query-builder, semantic-search, retrieve, evidence, qa, index-sync | Not built | [full list](docs/spec/skills/index.md) |
+| 11–14, 16, 18 | query, query-builder, semantic-search, retrieve, evidence, index-sync | Not built | [full list](docs/spec/skills/index.md) |
 
 This table is a snapshot - `python3 skills/obsidian-workflow/scripts/workflow.py list-skills` checks the roster live against what's actually installed, so it can't go stale the way this table can.
 
