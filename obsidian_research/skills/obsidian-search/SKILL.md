@@ -60,12 +60,33 @@ python3 ~/.claude/skills/obsidian-search/scripts/search.py --query "GraphRAG" --
   frontmatter field (`status=draft`, `type=concept`, ...). Filters are
   applied *after* Omnisearch — the script reads each candidate's
   frontmatter, so filtering doesn't cost extra Omnisearch calls.
-- The script expands a query into RU/EN/abbreviation variants only when the
-  vault profile's `term_variants` has an entry for it — it will never
-  invent a translation on its own. If you know the vault uses a specific
-  abbreviation or bilingual pair a lot, suggest the user add it to their
-  profile (`config/vault_profile.example.yaml` shows the shape) rather than
-  trying to work around it query by query.
+
+### Unsure which word/language actually appears in the vault? Pass `--query` more than once
+
+```bash
+python3 ~/.claude/skills/obsidian-search/scripts/search.py --query "чанкинг" --query "chunking" --mode deep
+```
+
+**Do not glue terms into one string** ("чанкинг chunking") when you're
+really probing for a concept that might appear under either name — that
+was an observed real failure: a note with the exact alias `chunking` only
+turned up as a weak `text` (body-only) hit for the glued query, because
+neither the whole combined string nor its parts matched the alias
+directly, and several other candidates weren't found at all. Repeating
+`--query` runs Omnisearch *and* the filename/title/alias/H1 tiers on each
+term independently, then keeps the strongest tier found per note across
+all of them (a note is still `alias_exact` even if only the *second*
+`--query` term is what actually matched it) — check the report's **По
+запросу** column to see which term found which note. Reach for this
+whenever a topic plausibly has a RU/EN pair, a common abbreviation, or a
+couple of synonyms, not only after a first search comes back weak.
+
+The script additionally expands a query into RU/EN/abbreviation variants
+when the vault profile's `term_variants` has a configured entry for it -
+it will never invent a translation on its own. If a bilingual pair or
+abbreviation comes up often enough to be worth hardcoding, suggest the
+user add it to their profile (`config/vault_profile.example.yaml` shows
+the shape) instead of always typing both terms by hand.
 
 ## Listing a folder with no query (`REQ-RET-0003`)
 

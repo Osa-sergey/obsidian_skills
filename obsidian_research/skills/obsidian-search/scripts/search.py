@@ -12,6 +12,12 @@ Examples
   search.py --query "GraphRAG обновление графа" --mode deep
   search.py --folder "PARA/projects" --recursive false
   search.py --query "python" --filters tag=MOC --format json
+  # Unsure which language/form a term is under in the vault (title, alias,
+  # or body only)? Pass --query more than once rather than gluing terms
+  # into one string - each is probed independently against Omnisearch AND
+  # against filename/title/alias/H1, and the report keeps the *strongest*
+  # match found for a note across all of them:
+  search.py --query "чанкинг" --query "chunking"
 """
 from __future__ import annotations
 
@@ -51,23 +57,41 @@ def clean_excerpt(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
-def expand_query_terms(query: str, term_variants: Dict[str, list]) -> List[str]:
-    """S3: controlled RU/EN/abbreviation expansion, provenance-tagged.
+def build_query_list(base_queries: List[str], term_variants: Dict[str, list]) -> List[tuple]:
+    """One (reason, query) pair per distinct query actually worth trying:
+    every `--query` the caller gave as `("original", ...)`, plus S3's
+    controlled RU/EN/abbreviation expansion for each (config-driven, never
+    invented at run time - see profile.term_variants in
+    config/vault_profile.example.yaml). Order preserved; a query that
+    normalizes the same as one already in the list is dropped, whichever
+    base query or variant expansion it came from.
 
-    Only expands on a *whole-query* match against a configured canonical
-    term or one of its variants (config-driven, never invented at run
-    time) - see profile.term_variants in config/vault_profile.example.yaml.
+    Multiple `--query` values are the fix for a real failure mode: a
+    caller who glues "чанкинг chunking" into one string gets only whatever
+    Omnisearch's full-text ranking finds for that exact glued phrase, even
+    if the target note's alias is the *separate* word "chunking" - neither
+    an exact nor a substring match against the combined string. Passing
+    each term as its own `--query` probes Omnisearch and the filename/
+    title/alias/H1 tiers independently per term (see classify_match)
+    without the caller needing to pre-declare a term_variants mapping.
     """
-    queries = [("original", query)]
-    nq = _norm(query)
-    seen = {nq}
-    for canonical, variants in term_variants.items():
-        pool = [canonical] + list(variants)
-        if any(_norm(v) == nq for v in pool):
-            for v in pool:
-                if _norm(v) not in seen:
-                    queries.append((f"variant_of:{canonical}", v))
-                    seen.add(_norm(v))
+    queries: List[tuple] = []
+    seen = set()
+    for base in base_queries:
+        base = base.strip()
+        if not base:
+            continue
+        nb = _norm(base)
+        if nb not in seen:
+            queries.append(("original", base))
+            seen.add(nb)
+        for canonical, variants in term_variants.items():
+            pool = [canonical] + list(variants)
+            if any(_norm(v) == nb for v in pool):
+                for v in pool:
+                    if _norm(v) not in seen:
+                        queries.append((f"variant_of:{canonical}", v))
+                        seen.add(_norm(v))
     return queries
 
 
@@ -89,10 +113,19 @@ def read_note_signals(vault_path: Path, rel_path: str) -> dict:
     return {"title": title, "aliases": aliases, "h1": h1, "tags": parsed.meta.get("tags") or []}
 
 
-def classify_match(query: str, basename_no_ext: str, naming, signals: dict) -> str:
-    """S1 priority order: exact filename > filename w/o MOC_/HUB_ > YAML
-    title > aliases > H1 > text. Each tier also accepts substring
-    containment, ranked weaker than an exact hit at the same tier."""
+_MATCH_TIER_ORDER = [
+    "exact_filename", "filename_without_prefix", "yaml_title", "alias_exact",
+    "heading_h1", "filename_contains", "title_contains", "alias_contains",
+    "heading_contains", "text",
+]
+_MATCH_TIER_RANK = {t: i for i, t in enumerate(_MATCH_TIER_ORDER)}
+
+
+def classify_match_one(query: str, basename_no_ext: str, naming, signals: dict) -> str:
+    """S1 priority order for a single query string: exact filename >
+    filename w/o MOC_/HUB_ > YAML title > aliases > H1 > text. Each tier
+    also accepts substring containment, ranked weaker than an exact hit at
+    the same tier. See classify_match for combining several queries."""
     nq = _norm(query)
     nb = _norm(basename_no_ext)
     if nq == nb:
@@ -120,6 +153,30 @@ def classify_match(query: str, basename_no_ext: str, naming, signals: dict) -> s
     if h1 and nq in _norm(h1):
         return "heading_contains"
     return "text"
+
+
+def classify_match(queries: List[str], basename_no_ext: str, naming, signals: dict):
+    """Runs classify_match_one for every query actually searched (the
+    original --query value(s) plus any term_variants expansion) and keeps
+    the *strongest* tier found, with which query produced it.
+
+    This is what makes multiple --query values (or a configured variant)
+    actually pay off: a hit found only because "chunking" is an exact
+    alias must be reported as alias_exact even when a *different* query
+    in the same run - e.g. the combined "чанкинг chunking" - would only
+    have classified as a weak 'text' match on its own. Classifying against
+    just the first/original query (the previous behaviour) silently threw
+    this away whenever a variant or a second --query was what really found
+    the note by name rather than by body text.
+    """
+    best_type, best_query = "text", (queries[0] if queries else "")
+    best_rank = _MATCH_TIER_RANK["text"]
+    for q in queries:
+        t = classify_match_one(q, basename_no_ext, naming, signals)
+        rank = _MATCH_TIER_RANK[t]
+        if rank < best_rank:
+            best_rank, best_type, best_query = rank, t, q
+    return best_type, best_query
 
 
 def omnisearch_stage(profile: VaultProfile, queries: List[tuple], limit: int) -> tuple:
@@ -249,7 +306,9 @@ def parse_filters(raw: Optional[str]) -> Dict[str, str]:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--query", help="search text (omit for folder listing)")
+    ap.add_argument("--query", action="append",
+                     help="search text (omit for folder listing); repeat for several "
+                          "independent terms, e.g. --query \"чанкинг\" --query \"chunking\"")
     ap.add_argument("--folder", help="vault-relative folder for folder-listing mode / folder filter")
     ap.add_argument("--recursive", default="true", choices=["true", "false"])
     ap.add_argument("--mode", default="narrow", choices=["narrow", "deep"])
@@ -286,7 +345,8 @@ def main() -> int:
 
     limit = args.limit or MODE_DEFAULT_LIMIT[args.mode]
     filters = parse_filters(args.filters)
-    queries = expand_query_terms(args.query, profile.term_variants)
+    queries = build_query_list(args.query, profile.term_variants)
+    all_query_strings = [q for _, q in queries]
 
     merged, provenance, unavailable, err = omnisearch_stage(profile, queries, limit)
     used_fallback = False
@@ -301,13 +361,14 @@ def main() -> int:
     for h in hits[:limit]:
         basename_no_ext = PurePosixPath(h["path"]).stem
         signals = read_note_signals(profile.vault_path, h["path"])
-        match_type = classify_match(args.query, basename_no_ext, profile.naming, signals)
+        match_type, matched_query = classify_match(all_query_strings, basename_no_ext, profile.naming, signals)
         cls = pathutil.classify_navigation_name(basename_no_ext, profile.naming)
         report_rows.append(
             {
                 "path": h["path"],
                 "basename": h["basename"],
                 "match_type": match_type,
+                "matched_via_query": matched_query,
                 "score": h["score"],
                 "excerpt": h.get("excerpt", ""),
                 "found_via": h["found_via"],
@@ -320,7 +381,7 @@ def main() -> int:
         )
 
     result = {
-        "query": args.query,
+        "queries": args.query,
         "mode": args.mode,
         "queries_used": [{"query": q, "reason": r} for r, q in queries],
         "omnisearch_unavailable": unavailable,
@@ -336,7 +397,8 @@ def main() -> int:
         print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
         return 0
 
-    print(f"### Поиск: «{args.query}» (mode={args.mode})\n")
+    query_label = " + ".join(f"«{q}»" for q in args.query)
+    print(f"### Поиск: {query_label} (mode={args.mode})\n")
     if unavailable:
         print(f"⚠️ **omnisearch_unavailable** — {err}\n\nИспользован резервный поиск по имени/title/aliases/H1 "
               "(без полнотекстового поиска по телу заметок).\n")
@@ -345,13 +407,14 @@ def main() -> int:
     if not report_rows:
         print("Ничего не найдено в разрешённом scope.")
         return 0
-    print("| Заметка | Путь | Совпадение | Пояснение |")
-    print("|---|---|---|---|")
+    print("| Заметка | Путь | Совпадение | По запросу | Пояснение |")
+    print("|---|---|---|---|---|")
     for r in report_rows:
         note_flag = ""
         if r["naming_convention"] and not r["naming_convention"]["compliant"]:
             note_flag = f" ⚠️legacy-{r['naming_convention']['kind']}"
-        print(f"| {r['basename']}{note_flag} | `{r['path']}` | {r['match_type']} | "
+        matched_via = f"`{r['matched_via_query']}`" if len(args.query) > 1 else ""
+        print(f"| {r['basename']}{note_flag} | `{r['path']}` | {r['match_type']} | {matched_via} | "
               f"{r['excerpt'][:80].replace(chr(10), ' ') or '—'} |")
     if len(hits) > limit:
         print(f"\n_Показано {limit} из {len(hits)} кандидатов (лимит режима {args.mode})._")
