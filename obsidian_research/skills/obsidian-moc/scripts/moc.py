@@ -293,23 +293,29 @@ def cmd_add_child(args, profile) -> int:
 
 
 def main() -> int:
+    # --profile/--format are defined on each subparser (via parents=), not
+    # the top level - see workflow.py's main() for why ("script.py
+    # subcommand --profile X" must work, not only "script.py --profile X
+    # subcommand").
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--profile", help="profile file path or registered vault id")
+    common.add_argument("--format", default="md", choices=["md", "json"])
+
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--profile", help="profile file path or registered vault id")
-    ap.add_argument("--format", default="md", choices=["md", "json"])
     sub = ap.add_subparsers(dest="command", required=True)
 
-    p_check = sub.add_parser("check-name", help="REQ-FND-0001 uniqueness check for MOC_<title>.md")
+    p_check = sub.add_parser("check-name", help="REQ-FND-0001 uniqueness check for MOC_<title>.md", parents=[common])
     p_check.add_argument("--title", required=True, help="title WITHOUT the MOC_ prefix")
     p_check.add_argument("--folder")
     p_check.add_argument("--batch-titles")
 
-    p_list = sub.add_parser("list-hierarchy", help="discover every type:moc file and its parent/child tree")
+    p_list = sub.add_parser("list-hierarchy", help="discover every type:moc file and its parent/child tree", parents=[common])
 
-    p_cyc = sub.add_parser("check-cycle", help="would this parent assignment create a cycle?")
+    p_cyc = sub.add_parser("check-cycle", help="would this parent assignment create a cycle?", parents=[common])
     p_cyc.add_argument("--moc", required=True)
     p_cyc.add_argument("--parent", required=True)
 
-    p_new = sub.add_parser("new", help="assemble and (optionally) write a new MOC")
+    p_new = sub.add_parser("new", help="assemble and (optionally) write a new MOC", parents=[common])
     p_new.add_argument("--title", required=True, help="title WITHOUT the MOC_ prefix")
     p_new.add_argument("--perspective", required=True, help="e.g. theory/architecture/implementation/operations/evaluation/use-cases")
     p_new.add_argument("--perspective-question", required=True)
@@ -321,13 +327,13 @@ def main() -> int:
     p_new.add_argument("--batch-titles")
     p_new.add_argument("--apply", action="store_true")
 
-    p_art = sub.add_parser("add-article", help="annotate an article into a MOC, and set the article's own moc: field")
+    p_art = sub.add_parser("add-article", help="annotate an article into a MOC, and set the article's own moc: field", parents=[common])
     p_art.add_argument("--moc", required=True)
     p_art.add_argument("--article", required=True)
     p_art.add_argument("--annotation", required=True, help="one line: this article's role in this MOC's perspective")
     p_art.add_argument("--apply", action="store_true")
 
-    p_child = sub.add_parser("add-child", help="annotate a child MOC into a parent, and set the child's parent_mocs")
+    p_child = sub.add_parser("add-child", help="annotate a child MOC into a parent, and set the child's parent_mocs", parents=[common])
     p_child.add_argument("--parent-moc", required=True)
     p_child.add_argument("--child-moc", required=True)
     p_child.add_argument("--annotation", required=True)

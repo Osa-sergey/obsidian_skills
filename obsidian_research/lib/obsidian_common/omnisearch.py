@@ -16,12 +16,28 @@ back to term/filesystem search and say so, do not just fail the request).
 """
 from __future__ import annotations
 
+import html
 import json
+import re
 import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from typing import List, Optional
+
+_TAG_RE = re.compile(r"<[^>]+>")
+
+
+def clean_excerpt(text: str) -> str:
+    """Omnisearch's `excerpt` is HTML (<br>, entities, possibly <mark>) meant
+    for its own UI; unwrap it to plain text for a report/JSON consumer.
+    Shared by every skill that surfaces an Omnisearch excerpt directly."""
+    if not text:
+        return ""
+    text = text.replace("<br>", " / ")
+    text = _TAG_RE.sub("", text)
+    text = html.unescape(text)
+    return re.sub(r"\s+", " ", text).strip()
 
 
 class OmnisearchUnavailable(RuntimeError):

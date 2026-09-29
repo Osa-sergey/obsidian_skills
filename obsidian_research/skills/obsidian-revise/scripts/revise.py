@@ -131,11 +131,16 @@ def cmd_propose_rename(args, profile) -> int:
 
 
 def main() -> int:
+    # --profile is defined on each subparser (via parents=), not the top
+    # level - see workflow.py's main() for why ("script.py subcommand
+    # --profile X" must work, not only "script.py --profile X subcommand").
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--profile", help="profile file path or registered vault id")
+
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--profile", help="profile file path or registered vault id")
     sub = ap.add_subparsers(dest="command", required=True)
 
-    p_prop = sub.add_parser("propose", help="build a patch proposal (no write)")
+    p_prop = sub.add_parser("propose", help="build a patch proposal (no write)", parents=[common])
     p_prop.add_argument("--path", required=True, help="vault-relative path of the existing article")
     p_prop.add_argument("--op", required=True,
                          choices=["replace-section", "append-section", "managed-block", "yaml-merge"])
@@ -148,10 +153,10 @@ def main() -> int:
     p_prop.add_argument("--sources", help="comma list of source paths/URLs backing this edit")
     p_prop.add_argument("--out", help="save the proposal JSON here instead of printing it")
 
-    p_apply = sub.add_parser("apply", help="re-check freshness and write a previously proposed patch")
+    p_apply = sub.add_parser("apply", help="re-check freshness and write a previously proposed patch", parents=[common])
     p_apply.add_argument("--proposal", required=True, help="path to a JSON file from 'propose --out'")
 
-    p_ren = sub.add_parser("propose-rename", help="uniqueness + reverse-reference report only, no execution")
+    p_ren = sub.add_parser("propose-rename", help="uniqueness + reverse-reference report only, no execution", parents=[common])
     p_ren.add_argument("--path", required=True)
     p_ren.add_argument("--new-name", required=True)
 

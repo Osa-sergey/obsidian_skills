@@ -130,12 +130,18 @@ def cmd_preview(args, profile) -> int:
 
 
 def main() -> int:
+    # --profile/--format are defined on each subparser (via parents=), not
+    # the top level - see workflow.py's main() for why ("script.py
+    # subcommand --profile X" must work, not only "script.py --profile X
+    # subcommand").
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--profile", help="profile file path or registered vault id")
+    common.add_argument("--format", default="md", choices=["md", "json"])
+
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--profile", help="profile file path or registered vault id")
-    ap.add_argument("--format", default="md", choices=["md", "json"])
     sub = ap.add_subparsers(dest="command", required=True)
 
-    p_read = sub.add_parser("read", help="addressed read by heading, block id, or line range")
+    p_read = sub.add_parser("read", help="addressed read by heading, block id, or line range", parents=[common])
     p_read.add_argument("--path", required=True)
     p_read.add_argument("--heading", help="exact heading title, or 'Parent > Child' to disambiguate duplicates")
     p_read.add_argument("--block-id", help="Obsidian ^blockid, without the caret")
@@ -146,7 +152,7 @@ def main() -> int:
                          help="how many levels of descendants --include-children adds (default 1)")
     p_read.add_argument("--max-chars", type=int, help="truncate returned text to this many characters")
 
-    p_prev = sub.add_parser("preview", help="REQ-KNO-0001 '## Суть' shortcut; missing is not an error")
+    p_prev = sub.add_parser("preview", help="REQ-KNO-0001 '## Суть' shortcut; missing is not an error", parents=[common])
     p_prev.add_argument("--path", required=True)
 
     args = ap.parse_args()

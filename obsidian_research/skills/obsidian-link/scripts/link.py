@@ -169,18 +169,23 @@ def cmd_apply(args, profile) -> int:
 
 
 def main() -> int:
+    # --profile is defined on each subparser (via parents=), not the top
+    # level - see workflow.py's main() for why ("script.py subcommand
+    # --profile X" must work, not only "script.py --profile X subcommand").
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--profile", help="profile file path or registered vault id")
+
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--profile", help="profile file path or registered vault id")
     sub = ap.add_subparsers(dest="command", required=True)
 
-    p_fb = sub.add_parser("find-broken", help="report unresolved/ambiguous wikilinks in scope")
+    p_fb = sub.add_parser("find-broken", help="report unresolved/ambiguous wikilinks in scope", parents=[common])
     p_fb.add_argument("--scope", help="vault-relative folder prefix; omit for the whole vault")
 
-    p_ce = sub.add_parser("check-existing", help="does source already link to target?")
+    p_ce = sub.add_parser("check-existing", help="does source already link to target?", parents=[common])
     p_ce.add_argument("--source", required=True)
     p_ce.add_argument("--target", required=True)
 
-    p_pr = sub.add_parser("propose", help="propose adding a cross-link from source to target")
+    p_pr = sub.add_parser("propose", help="propose adding a cross-link from source to target", parents=[common])
     p_pr.add_argument("--source", required=True)
     p_pr.add_argument("--target", required=True)
     p_pr.add_argument("--relation", required=True,
@@ -197,7 +202,7 @@ def main() -> int:
     p_pr.add_argument("--apply", action="store_true", help="also apply the block-id sub-step immediately (granularity=block only)")
     p_pr.add_argument("--out", help="save the proposal JSON here instead of printing it")
 
-    p_ap = sub.add_parser("apply", help="re-check freshness and write a previously proposed link patch")
+    p_ap = sub.add_parser("apply", help="re-check freshness and write a previously proposed link patch", parents=[common])
     p_ap.add_argument("--proposal", required=True)
 
     args = ap.parse_args()

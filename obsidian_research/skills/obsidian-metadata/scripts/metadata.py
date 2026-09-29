@@ -147,26 +147,31 @@ def cmd_apply(args, profile) -> int:
 
 
 def main() -> int:
+    # --profile is defined on each subparser (via parents=), not the top
+    # level - see workflow.py's main() for why ("script.py subcommand
+    # --profile X" must work, not only "script.py --profile X subcommand").
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--profile", help="profile file path or registered vault id")
+
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--profile", help="profile file path or registered vault id")
     sub = ap.add_subparsers(dest="command", required=True)
 
-    p_val = sub.add_parser("validate", help="check frontmatter against the vault's controlled vocabulary")
+    p_val = sub.add_parser("validate", help="check frontmatter against the vault's controlled vocabulary", parents=[common])
     p_val.add_argument("--path", required=True)
     p_val.add_argument("--required", help="comma list overriding the default required-field set")
 
-    p_tag = sub.add_parser("check-tag", help="is this tag a near-duplicate of an existing one?")
+    p_tag = sub.add_parser("check-tag", help="is this tag a near-duplicate of an existing one?", parents=[common])
     p_tag.add_argument("--tag", required=True)
 
-    sub.add_parser("list-vocab", help="print this vault's controlled types/statuses/relations")
+    sub.add_parser("list-vocab", help="print this vault's controlled types/statuses/relations", parents=[common])
 
-    p_prop = sub.add_parser("propose", help="validate, then build a yaml-merge patch")
+    p_prop = sub.add_parser("propose", help="validate, then build a yaml-merge patch", parents=[common])
     p_prop.add_argument("--path", required=True)
     p_prop.add_argument("--updates-file", required=True, help="JSON object of fields to merge (additive)")
     p_prop.add_argument("--reason")
     p_prop.add_argument("--out")
 
-    p_ap = sub.add_parser("apply", help="re-check freshness and write a previously proposed patch")
+    p_ap = sub.add_parser("apply", help="re-check freshness and write a previously proposed patch", parents=[common])
     p_ap.add_argument("--proposal", required=True)
 
     args = ap.parse_args()

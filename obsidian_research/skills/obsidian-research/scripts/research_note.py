@@ -265,22 +265,28 @@ def cmd_render(args, profile) -> int:
 
 
 def main() -> int:
+    # --profile/--format are defined on each subparser (via parents=), not
+    # the top level - see workflow.py's main() for why ("script.py
+    # subcommand --profile X" must work, not only "script.py --profile X
+    # subcommand").
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--profile", help="profile file path or registered vault id")
+    common.add_argument("--format", default="md", choices=["md", "json"])
+
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--profile", help="profile file path or registered vault id")
-    ap.add_argument("--format", default="md", choices=["md", "json"])
     sub = ap.add_subparsers(dest="command", required=True)
 
-    p_frag = sub.add_parser("fragment", help="addressed read of one heading section")
+    p_frag = sub.add_parser("fragment", help="addressed read of one heading section", parents=[common])
     p_frag.add_argument("--path", required=True)
     p_frag.add_argument("--heading")
 
-    p_val = sub.add_parser("validate", help="check a claim->evidence JSON map against the live vault")
+    p_val = sub.add_parser("validate", help="check a claim->evidence JSON map against the live vault", parents=[common])
     p_val.add_argument("--evidence", required=True, help="path to a JSON file: [{claim, path, heading}, ...]")
 
-    p_dedup = sub.add_parser("dedup-sources", help="group evidence items citing the same primary source")
+    p_dedup = sub.add_parser("dedup-sources", help="group evidence items citing the same primary source", parents=[common])
     p_dedup.add_argument("--sources", required=True, help="path to a JSON file: [{path/title, source_url}, ...]")
 
-    p_render = sub.add_parser("render", help="render a findings JSON object into the research-note template")
+    p_render = sub.add_parser("render", help="render a findings JSON object into the research-note template", parents=[common])
     p_render.add_argument("--findings", required=True)
     p_render.add_argument("--out", help="vault-relative path to write; omit to print to stdout")
     p_render.add_argument("--overwrite", action="store_true")

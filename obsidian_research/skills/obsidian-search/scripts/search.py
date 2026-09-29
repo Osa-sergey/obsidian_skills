@@ -22,7 +22,6 @@ Examples
 from __future__ import annotations
 
 import argparse
-import html
 import json
 import re
 import sys
@@ -33,7 +32,7 @@ from typing import Dict, List, Optional
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "lib"))
 
 from obsidian_common import linkgraph, markdown as md, pathutil  # noqa: E402
-from obsidian_common.omnisearch import OmnisearchClient, OmnisearchUnavailable  # noqa: E402
+from obsidian_common.omnisearch import OmnisearchClient, OmnisearchUnavailable, clean_excerpt  # noqa: E402
 from obsidian_common.profile import ProfileError, VaultProfile, resolve_profile  # noqa: E402
 
 MODE_DEFAULT_LIMIT = {"narrow": 5, "deep": 20}
@@ -41,20 +40,6 @@ MODE_DEFAULT_LIMIT = {"narrow": 5, "deep": 20}
 
 def _norm(s: str) -> str:
     return unicodedata.normalize("NFC", s).strip().casefold()
-
-
-_TAG_RE = re.compile(r"<[^>]+>")
-
-
-def clean_excerpt(text: str) -> str:
-    """Omnisearch's `excerpt` is HTML (<br>, entities, possibly <mark>) meant
-    for its own UI; unwrap it to plain text for a report/JSON consumer."""
-    if not text:
-        return ""
-    text = text.replace("<br>", " / ")
-    text = _TAG_RE.sub("", text)
-    text = html.unescape(text)
-    return re.sub(r"\s+", " ", text).strip()
 
 
 def build_query_list(base_queries: List[str], term_variants: Dict[str, list]) -> List[tuple]:

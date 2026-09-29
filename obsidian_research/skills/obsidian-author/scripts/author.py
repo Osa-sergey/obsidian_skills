@@ -158,19 +158,26 @@ def cmd_new(args, profile: VaultProfile) -> int:
 
 
 def main() -> int:
+    # --profile is defined on each subparser (via parents=), not the top
+    # level: argparse hands every token after the subcommand name to the
+    # subparser, so "script.py subcommand --profile X" (the natural order,
+    # and how every SKILL.md example writes it) needs the subparser to
+    # know --profile too, not just the top-level parser.
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--profile", help="profile file path or registered vault id")
+
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--profile", help="profile file path or registered vault id")
     sub = ap.add_subparsers(dest="command", required=True)
 
-    p_check = sub.add_parser("check-name", help="REQ-FND-0001 global uniqueness check")
+    p_check = sub.add_parser("check-name", help="REQ-FND-0001 global uniqueness check", parents=[common])
     p_check.add_argument("--title", required=True)
     p_check.add_argument("--folder", default="")
     p_check.add_argument("--batch-titles", help="comma list of other titles being created in the same pass")
 
-    p_skel = sub.add_parser("skeleton", help="print the section skeleton for a note type")
+    p_skel = sub.add_parser("skeleton", help="print the section skeleton for a note type", parents=[common])
     p_skel.add_argument("--type", required=True, choices=list(SKELETONS))
 
-    p_new = sub.add_parser("new", help="assemble and (optionally) write a new draft article")
+    p_new = sub.add_parser("new", help="assemble and (optionally) write a new draft article", parents=[common])
     p_new.add_argument("--title", required=True)
     p_new.add_argument("--type", required=True)
     p_new.add_argument("--folder", help="defaults to the profile's managed_folders.drafts")

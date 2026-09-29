@@ -283,15 +283,20 @@ def cmd_add_stage(args, profile) -> int:
 
 
 def main() -> int:
+    # --profile is defined on each subparser (via parents=), not the top
+    # level - see workflow.py's main() for why ("script.py subcommand
+    # --profile X" must work, not only "script.py --profile X subcommand").
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--profile", help="profile file path or registered vault id")
+
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--profile", help="profile file path or registered vault id")
     sub = ap.add_subparsers(dest="command", required=True)
 
-    p_check = sub.add_parser("check-name", help="REQ-FND-0001 uniqueness for the .md/.canvas pair")
+    p_check = sub.add_parser("check-name", help="REQ-FND-0001 uniqueness for the .md/.canvas pair", parents=[common])
     p_check.add_argument("--title", required=True, help="title WITHOUT the HUB_ prefix")
     p_check.add_argument("--folder")
 
-    p_new = sub.add_parser("new", help="write a new HUB_<title>.md + .canvas pair")
+    p_new = sub.add_parser("new", help="write a new HUB_<title>.md + .canvas pair", parents=[common])
     p_new.add_argument("--title", required=True)
     p_new.add_argument("--purpose", required=True)
     p_new.add_argument("--summary", required=True)
@@ -305,10 +310,10 @@ def main() -> int:
     p_new.add_argument("--folder")
     p_new.add_argument("--apply", action="store_true")
 
-    p_val = sub.add_parser("validate", help="JSON Canvas structural checks")
+    p_val = sub.add_parser("validate", help="JSON Canvas structural checks", parents=[common])
     p_val.add_argument("--path", required=True)
 
-    p_card = sub.add_parser("add-card", help="add one card next to an existing stage group")
+    p_card = sub.add_parser("add-card", help="add one card next to an existing stage group", parents=[common])
     p_card.add_argument("--canvas", required=True)
     p_card.add_argument("--stage", required=True, help="the target group's label")
     p_card.add_argument("--file", help="vault-relative path for a file card")
@@ -316,7 +321,7 @@ def main() -> int:
     p_card.add_argument("--text", help="text for a text card (omit --file to make a text card)")
     p_card.add_argument("--apply", action="store_true")
 
-    p_stage = sub.add_parser("add-stage", help="append a new stage to the right of the existing layout")
+    p_stage = sub.add_parser("add-stage", help="append a new stage to the right of the existing layout", parents=[common])
     p_stage.add_argument("--canvas", required=True)
     p_stage.add_argument("--md", required=True, help="the paired HUB_<title>.md to also update")
     p_stage.add_argument("--stage-file", required=True, help="JSON: one stage object, same shape as in --stages-file")
