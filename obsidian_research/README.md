@@ -14,7 +14,11 @@ applies to `skills/`/`lib/`/`bin/` just as much as to `docs/`.
 | 1 | [`obsidian-search`](skills/obsidian-search/SKILL.md) | **Implemented** | [§3.1](docs/spec/skills/01-obsidian-search.md) |
 | 2 | [`obsidian-context`](skills/obsidian-context/SKILL.md) | **Implemented** | [§3.2](docs/spec/skills/02-obsidian-context.md) |
 | 3 | [`obsidian-research`](skills/obsidian-research/SKILL.md) | **Implemented** | [§3.3](docs/spec/skills/03-obsidian-research.md) |
-| 4–19 | author, revise, link, metadata, moc, hub, workflow, query(-builder), semantic-search, retrieve, fragment-reader, evidence, qa, index-sync, gap-search | Not built | [full list](docs/spec/skills/index.md) |
+| 4 | [`obsidian-author`](skills/obsidian-author/SKILL.md) | **Implemented** | [§3.4](docs/spec/skills/04-obsidian-author.md) |
+| 5 | [`obsidian-revise`](skills/obsidian-revise/SKILL.md) | **Implemented** | [§3.5](docs/spec/skills/05-obsidian-revise.md) |
+| 6 | [`obsidian-link`](skills/obsidian-link/SKILL.md) | **Implemented** | [§3.6](docs/spec/skills/06-obsidian-link.md) |
+| 7 | [`obsidian-metadata`](skills/obsidian-metadata/SKILL.md) | **Implemented** | [§3.7](docs/spec/skills/07-obsidian-metadata.md) |
+| 8–19 | moc, hub, workflow, query(-builder), semantic-search, retrieve, fragment-reader, evidence, qa, index-sync, gap-search | Not built | [full list](docs/spec/skills/index.md) |
 
 "Implemented" means: a `SKILL.md` plus working `scripts/`, tested against a
 real vault and a real Omnisearch server. It does not mean every open

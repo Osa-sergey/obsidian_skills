@@ -61,7 +61,7 @@ def cmd_fragment(args, profile) -> int:
         "text": result.text,
     }
     if args.format == "json":
-        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        print(json.dumps(payload, ensure_ascii=False, indent=2, default=str))
     else:
         print(f"status={result.status} path={result.path} heading={result.heading_path}")
         if result.candidates:
@@ -101,7 +101,7 @@ def cmd_dedup_sources(args, profile) -> int:
     ]
     payload = {"total_sources": len(sources), "duplicate_groups": result}
     if args.format == "json":
-        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        print(json.dumps(payload, ensure_ascii=False, indent=2, default=str))
     else:
         if not result:
             print("Повторяющихся первоисточников не найдено.")
@@ -144,7 +144,7 @@ def cmd_validate(args, profile) -> int:
         "results": results,
     }
     if args.format == "json":
-        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        print(json.dumps(payload, ensure_ascii=False, indent=2, default=str))
     else:
         print(f"Проверено {len(evidence)} оснований: {ok_count} подтверждены, {len(evidence) - ok_count} требуют исправления.\n")
         for r in results:

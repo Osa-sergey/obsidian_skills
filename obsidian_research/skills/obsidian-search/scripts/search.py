@@ -270,7 +270,7 @@ def main() -> int:
     if args.folder and not args.query:
         result = folder_listing(profile.vault_path, profile.scope, args.folder, recursive)
         if args.format == "json":
-            print(json.dumps(result, ensure_ascii=False, indent=2))
+            print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
         else:
             if "error" in result:
                 print(f"**Ошибка:** папка `{result['folder']}` не найдена или недоступна.")
@@ -333,7 +333,7 @@ def main() -> int:
     }
 
     if args.format == "json":
-        print(json.dumps(result, ensure_ascii=False, indent=2))
+        print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
         return 0
 
     print(f"### Поиск: «{args.query}» (mode={args.mode})\n")

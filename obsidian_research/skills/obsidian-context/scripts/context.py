@@ -101,7 +101,7 @@ def main() -> int:
 
     if start_errors and not start_paths:
         if args.format == "json":
-            print(json.dumps({"start_errors": start_errors}, ensure_ascii=False, indent=2))
+            print(json.dumps({"start_errors": start_errors}, ensure_ascii=False, indent=2, default=str))
         else:
             print("**Не удалось разрешить ни одной исходной заметки:**")
             for e in start_errors:
@@ -153,7 +153,7 @@ def main() -> int:
     }
 
     if args.format == "json":
-        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        print(json.dumps(payload, ensure_ascii=False, indent=2, default=str))
         return 0
 
     print(f"### Контекст от {start_paths} (mode={args.mode}, depth={depth}, direction={args.direction})\n")

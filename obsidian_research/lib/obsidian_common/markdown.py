@@ -85,12 +85,16 @@ class Heading:
     path: tuple  # ancestor titles including this heading
 
 
-def parse_headings(body: str, body_start_line: int = 1) -> List[Heading]:
-    lines = body.splitlines()
-    raw: List[Heading] = []
+def fence_mask(lines: List[str]) -> List[bool]:
+    """True at index i if lines[i] is inside (or is a delimiter of) a ``` or
+    ~~~ fenced code block. Shared by parse_headings (a `#` in a code sample
+    is not a heading) and extract_wikilinks (a `[[...]]`-shaped template
+    placeholder inside a ```dataviewjs block, e.g. `[[${m.file.path}]]`, is
+    not a real link - real vaults have these, and treating one as a graph
+    edge or a broken link is a false positive, not caution)."""
+    mask = [False] * len(lines)
     in_fence = False
     fence_marker = None
-    stack: List[str] = []
     for i, line in enumerate(lines):
         fm = FENCE_RE.match(line.strip())
         if fm:
@@ -101,8 +105,19 @@ def parse_headings(body: str, body_start_line: int = 1) -> List[Heading]:
             elif line.strip().startswith(fence_marker):
                 in_fence = False
                 fence_marker = None
+            mask[i] = True
             continue
-        if in_fence:
+        mask[i] = in_fence
+    return mask
+
+
+def parse_headings(body: str, body_start_line: int = 1) -> List[Heading]:
+    lines = body.splitlines()
+    raw: List[Heading] = []
+    in_fence_mask = fence_mask(lines)
+    stack: List[str] = []
+    for i, line in enumerate(lines):
+        if in_fence_mask[i]:
             continue
         hm = HEADING_RE.match(line)
         if not hm:
@@ -178,6 +193,22 @@ def extract_summary_suti(raw_text: str, headings: List[Heading]) -> Optional[str
     return "\n".join(lines[1:]).strip() if lines else ""
 
 
+# Splits on . ! ? followed by whitespace and an uppercase/Cyrillic capital
+# letter (or end of text) - a heuristic, not a real sentence tokenizer: it
+# will overcount an abbreviation like "т.е." and undercount an ellipsis.
+# Good enough to flag "this doesn't look like exactly two sentences" for a
+# human/Claude to double check, never to silently rewrite the text.
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+(?=[А-ЯЁA-Z])")
+
+
+def count_sentences(text: str) -> int:
+    text = text.strip()
+    if not text:
+        return 0
+    parts = _SENTENCE_SPLIT_RE.split(text)
+    return len([p for p in parts if p.strip()])
+
+
 PARA_BREAK_RE = re.compile(r"^\s*$")
 
 
@@ -241,7 +272,11 @@ class WikiLink:
 
 def extract_wikilinks(raw_text: str) -> List[WikiLink]:
     out = []
-    for lineno, line in enumerate(raw_text.splitlines(), start=1):
+    lines = raw_text.splitlines()
+    fenced = fence_mask(lines)
+    for lineno, line in enumerate(lines, start=1):
+        if fenced[lineno - 1]:
+            continue
         for m in WIKILINK_RE.finditer(line):
             out.append(
                 WikiLink(

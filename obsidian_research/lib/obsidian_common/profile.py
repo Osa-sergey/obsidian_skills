@@ -30,6 +30,8 @@ from typing import Optional
 
 import yaml
 
+from .frontmatter_ops import DEFAULT_VOCAB
+
 REGISTRY_DIR = Path.home() / ".claude" / "obsidian" / "vaults"
 PROJECT_LINK_RELPATH = Path(".claude") / "obsidian-vault.yaml"
 MAX_UPWARD_SEARCH = 8  # how many parent directories to check for a project link
@@ -73,6 +75,22 @@ class NamingConfig:
 
 
 @dataclasses.dataclass
+class ManagedFoldersConfig:
+    # foundation.md §2.2: "места для новых статей, источников, MOC, HUB и
+    # исследовательских отчётов". Defaults live under a dedicated System/
+    # root rather than this vault's own PARA/zettelkasten structure - a
+    # skill-generated draft should land somewhere obviously separate from
+    # the user's own organization until they place it, not get mixed into
+    # folders they curate by hand. Override per vault if a different
+    # convention is preferred (e.g. an existing PARA "inbox" folder).
+    drafts: str = "System/drafts"
+    sources: str = "System/sources"
+    moc: str = "Maps"
+    hub: str = "Hubs"
+    research: str = "System/research"
+
+
+@dataclasses.dataclass
 class LimitsConfig:
     # defaults.md §11 "RAPTOR, лимиты и callouts" table, narrow/deep rows,
     # and block C4. RAPTOR-specific fields (top-k) are kept here too so the
@@ -92,6 +110,8 @@ class VaultProfile:
     naming: NamingConfig
     limits_narrow: LimitsConfig
     limits_deep: LimitsConfig
+    managed_folders: ManagedFoldersConfig = dataclasses.field(default_factory=ManagedFoldersConfig)
+    vocab: dict = dataclasses.field(default_factory=lambda: dict(DEFAULT_VOCAB))
     language_primary: str = "ru"
     term_variants: dict = dataclasses.field(default_factory=dict)
     source_path: Optional[Path] = None  # where this profile was loaded from
@@ -157,6 +177,18 @@ def _dict_to_profile(data: dict, source_path: Optional[Path]) -> VaultProfile:
         max_tokens=int(deep_cfg.get("max_tokens", 30000)),
     )
 
+    mf_cfg = data.get("managed_folders", {}) or {}
+    managed_folders = ManagedFoldersConfig(
+        drafts=mf_cfg.get("drafts", "System/drafts"),
+        sources=mf_cfg.get("sources", "System/sources"),
+        moc=mf_cfg.get("moc", "Maps"),
+        hub=mf_cfg.get("hub", "Hubs"),
+        research=mf_cfg.get("research", "System/research"),
+    )
+
+    vocab_cfg = data.get("vocab", {}) or {}
+    vocab = {**DEFAULT_VOCAB, **vocab_cfg}  # a vault can override one list without losing the others
+
     language_cfg = data.get("language", {}) or {}
 
     return VaultProfile(
@@ -167,6 +199,8 @@ def _dict_to_profile(data: dict, source_path: Optional[Path]) -> VaultProfile:
         naming=naming,
         limits_narrow=limits_narrow,
         limits_deep=limits_deep,
+        managed_folders=managed_folders,
+        vocab=vocab,
         language_primary=language_cfg.get("primary", "ru"),
         term_variants=dict(data.get("term_variants", {}) or {}),
         source_path=source_path,
