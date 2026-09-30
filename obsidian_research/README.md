@@ -27,7 +27,8 @@ applies to `skills/`/`lib/`/`bin/` just as much as to `docs/`.
 | 13 | [`obsidian-semantic-search`](skills/obsidian-semantic-search/SKILL.md) | **Implemented** | [§3.13](docs/spec/skills/13-obsidian-semantic-search.md) |
 | 14 | [`obsidian-retrieve`](skills/obsidian-retrieve/SKILL.md) | **Implemented** | [§3.14](docs/spec/skills/14-obsidian-retrieve.md) |
 | 18 | [`obsidian-index-sync`](skills/obsidian-index-sync/SKILL.md) | **Implemented** | [§3.18](docs/spec/skills/18-obsidian-index-sync.md) |
-| 11, 12, 16 | query, query-builder, evidence | Not built | [full list](docs/spec/skills/index.md) |
+| 16 | [`obsidian-evidence`](skills/obsidian-evidence/SKILL.md) | **Implemented** | [§3.16](docs/spec/skills/16-obsidian-evidence.md) |
+| 11, 12 | query, query-builder | Not built — spec itself is an open proposal (Q1–Q6/V1–V11 unresolved: which engine, DataviewJS support, where to store query definitions) | [§3.11](docs/spec/skills/11-obsidian-query.md), [§3.12](docs/spec/skills/12-obsidian-query-builder.md) |
 
 This table is a snapshot - `python3 skills/obsidian-workflow/scripts/workflow.py list-skills` checks the roster live against what's actually installed, so it can't go stale the way this table can.
 
