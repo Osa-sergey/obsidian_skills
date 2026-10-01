@@ -36,7 +36,7 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional
 
 from qdrant_client import QdrantClient
-from qdrant_client.http.exceptions import UnexpectedResponse
+from qdrant_client.http.exceptions import ResponseHandlingException, UnexpectedResponse
 from qdrant_client.models import (
     Distance,
     FieldCondition,
@@ -72,6 +72,26 @@ def _collection_name(profile: VaultProfile) -> str:
     return f"{profile.vectorstore.collection_prefix}_{profile.vault_id}"
 
 
+def _get_collection_or_none(client: QdrantClient, name: str):
+    """`client.get_collection` raises two very different things that look
+    similar at a glance: `UnexpectedResponse`/`ValueError` for "this
+    collection doesn't exist yet" (a normal, expected state before the
+    first index build) vs `ResponseHandlingException` for "Qdrant itself
+    is unreachable" (container stopped, network down). Treating both as
+    "doesn't exist" - an earlier version of every caller below did this
+    via a bare `except (UnexpectedResponse, ValueError)` that simply
+    didn't list the connection-error type - means a dropped connection
+    silently looks like "nothing indexed yet" instead of surfacing as
+    VectorStoreUnavailable, which is actively misleading to a caller
+    deciding whether to report index_dirty."""
+    try:
+        return client.get_collection(name)
+    except (UnexpectedResponse, ValueError):
+        return None
+    except ResponseHandlingException as exc:
+        raise VectorStoreUnavailable(f"Qdrant unreachable while checking collection {name!r}: {exc}") from exc
+
+
 def get_client(profile: VaultProfile) -> QdrantClient:
     vs = profile.vectorstore
     try:
@@ -101,8 +121,8 @@ def ensure_collection(client: QdrantClient, profile: VaultProfile, dimension: in
     "Условия пересмотра") - fail loudly rather than silently corrupt or
     silently drop the old vectors."""
     name = _collection_name(profile)
-    try:
-        existing = client.get_collection(name)
+    existing = _get_collection_or_none(client, name)
+    if existing is not None:
         existing_vectors = existing.config.params.vectors
         existing_dim = existing_vectors[VECTOR_NAMES[0]].size
         if existing_dim != dimension:
@@ -113,8 +133,6 @@ def ensure_collection(client: QdrantClient, profile: VaultProfile, dimension: in
                 "collection and resync every file), see ADR-0009."
             )
         return
-    except (UnexpectedResponse, ValueError):
-        pass  # collection does not exist yet
     client.create_collection(
         collection_name=name,
         vectors_config={
@@ -143,7 +161,11 @@ def upsert_nodes(
         PointStruct(id=n.node_id, vector=vec, payload=n.to_payload())
         for n, vec in zip(nodes, vectors)
     ]
-    client.upsert(collection_name=_collection_name(profile), points=points)
+    name = _collection_name(profile)
+    try:
+        client.upsert(collection_name=name, points=points)
+    except (UnexpectedResponse, ResponseHandlingException) as exc:
+        raise VectorStoreUnavailable(f"upsert into {name!r} failed: {exc}") from exc
 
 
 def delete_by_source_path(client: QdrantClient, profile: VaultProfile, source_path: str) -> None:
@@ -151,9 +173,7 @@ def delete_by_source_path(client: QdrantClient, profile: VaultProfile, source_pa
     before re-upserting a changed file's nodes, and on its own when a file
     is removed from the vault."""
     name = _collection_name(profile)
-    try:
-        client.get_collection(name)
-    except (UnexpectedResponse, ValueError):
+    if _get_collection_or_none(client, name) is None:
         return  # nothing indexed yet for this vault
     client.delete(
         collection_name=name,
@@ -169,9 +189,7 @@ def count_by_source_path(client: QdrantClient, profile: VaultProfile, source_pat
     and by its own post-write self-check (spec 18 step 6: "сверить...
     число записанных узлов")."""
     name = _collection_name(profile)
-    try:
-        client.get_collection(name)
-    except (UnexpectedResponse, ValueError):
+    if _get_collection_or_none(client, name) is None:
         return 0
     result = client.count(
         collection_name=name,
@@ -201,7 +219,7 @@ def query(
             collection_name=name, query=query_vector, using=using,
             limit=limit, query_filter=query_filter,
         )
-    except (UnexpectedResponse, ValueError) as exc:
+    except (UnexpectedResponse, ValueError, ResponseHandlingException) as exc:
         raise VectorStoreUnavailable(f"query against {name!r} failed: {exc}") from exc
     return [ScoredNode(node_id=str(p.id), score=p.score, payload=p.payload or {}) for p in result.points]
 
@@ -217,6 +235,6 @@ def get_by_ids(client: QdrantClient, profile: VaultProfile, node_ids: List[str])
     name = _collection_name(profile)
     try:
         points = client.retrieve(collection_name=name, ids=node_ids, with_payload=True)
-    except (UnexpectedResponse, ValueError) as exc:
+    except (UnexpectedResponse, ValueError, ResponseHandlingException) as exc:
         raise VectorStoreUnavailable(f"retrieve against {name!r} failed: {exc}") from exc
     return [ScoredNode(node_id=str(p.id), score=1.0, payload=p.payload or {}) for p in points]
