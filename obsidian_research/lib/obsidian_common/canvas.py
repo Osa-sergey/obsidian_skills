@@ -17,26 +17,45 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import uuid
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Dict, List, Optional, Tuple
 
 from .write import atomic_write
 
 VALID_NODE_TYPES = {"text", "file", "link", "group"}
 
-# Layout constants for a freshly generated HUB (H7: left to right; H4:
-# stage = goal blurb + file cards). Not configurable per call on purpose -
-# consistent geometry across generated HUBs is more valuable than
-# per-call tuning, and an existing HUB's own manual layout is never
-# touched by these (see add_card_near_group / H9).
-STAGE_WIDTH = 420
-STAGE_GAP = 80
-CARD_HEIGHT = 80
-CARD_GAP = 20
-STAGE_HEADER_HEIGHT = 120
-STAGE_PADDING = 20
+# Layout constants, taken from the reference HUB (HUB RAG 2): a stage
+# group is two card columns wide, cards are padded 26 inside a group and
+# 18 apart. Not configurable per call on purpose - consistent geometry
+# across generated HUBs beats per-call tuning, and an existing HUB's own
+# manual layout is never touched by these (see add_card_near_group / H9).
+COL_W = 310                      # one card column
+CARD_GAP = 18
+PAD = 26                         # group padding
+GROUP_W = 2 * COL_W + CARD_GAP + 2 * PAD   # 690
+INNER_W = GROUP_W - 2 * PAD                # 638, a "wide" card
+STAGE_GAP = 160                  # between stage groups in a row
+SUB_PAD = 18                     # padding inside a nested subgroup
+LABEL_SPACE = 40                 # Obsidian draws a group's label above its box
+ZONE_PAD_X = 40
+ZONE_PAD_TOP = 90
+ZONE_PAD_BOTTOM = 40
+ZONE_GAP = 180
+CONTROL_W = 240
+MAX_COLS = 4                     # stages per row before wrapping
+
+# Colour = status, as in the reference (Obsidian presets "1".."6").
+STATUS_COLORS = {"warn": "1", "tip": "3", "new": "4", "stub": "5", "cross": "6"}
+DEFAULT_LEGEND = {
+    "1": "предупреждение / риск",
+    "3": "приём, практика, улучшение",
+    "4": "новый материал",
+    "5": "заглушка — материала пока нет",
+    "6": "сквозная тема",
+}
 
 
 def new_id() -> str:
@@ -89,7 +108,8 @@ class CanvasIssue:
     message: str
 
 
-def validate_canvas(vault_path: Path, nodes: List[dict], edges: List[dict]) -> List[CanvasIssue]:
+def validate_canvas(vault_path: Path, nodes: List[dict], edges: List[dict],
+                    resolve_note=None) -> List[CanvasIssue]:
     """§3.9 "Проверки": valid structure, unique IDs, every edge endpoint
     and every file-card target actually exists, no degenerate sizes, no
     two nodes sharing identical geometry (a likely copy/paste mistake)."""
@@ -132,58 +152,347 @@ def validate_canvas(vault_path: Path, nodes: List[dict], edges: List[dict]) -> L
             issues.append(CanvasIssue("error", f"edge {eid}: fromNode {e.get('fromNode')!r} does not exist"))
         if e.get("toNode") not in id_set:
             issues.append(CanvasIssue("error", f"edge {eid}: toNode {e.get('toNode')!r} does not exist"))
+    issues += _check_geometry(nodes)
+    if resolve_note is not None:
+        issues += _check_text_links(nodes, resolve_note)
     return issues
 
 
-def _card_node(kind: str, x: int, y: int, width: int, height: int, card: dict) -> dict:
-    node = {"id": new_id(), "type": kind, "x": x, "y": y, "width": width, "height": height}
-    if kind == "file":
-        node["file"] = card["file"]
-        if card.get("subpath"):
-            node["subpath"] = card["subpath"]
+def _inter(a: dict, b: dict) -> bool:
+    return (a["x"] < b["x"] + b["width"] and b["x"] < a["x"] + a["width"]
+            and a["y"] < b["y"] + b["height"] and b["y"] < a["y"] + a["height"])
+
+
+def _inside(inner: dict, outer: dict) -> bool:
+    return (inner["x"] >= outer["x"] and inner["y"] >= outer["y"]
+            and inner["x"] + inner["width"] <= outer["x"] + outer["width"]
+            and inner["y"] + inner["height"] <= outer["y"] + outer["height"])
+
+
+def _check_geometry(nodes: List[dict]) -> List[CanvasIssue]:
+    """No unintended overlaps: two content nodes must not intersect, and
+    a node must not straddle a group's border (inside or fully outside)."""
+    out: List[CanvasIssue] = []
+    boxed = [n for n in nodes if all(isinstance(n.get(k), (int, float)) for k in ("x", "y", "width", "height"))]
+    groups = [n for n in boxed if n.get("type") == "group"]
+    others = [n for n in boxed if n.get("type") != "group"]
+
+    def name(n):
+        return n.get("label") or (n.get("text") or n.get("file") or "")[:30].replace("\n", " ") or n["id"]
+
+    for i, a in enumerate(others):
+        for b in others[i + 1:]:
+            if _inter(a, b):
+                out.append(CanvasIssue("warning", f"cards overlap: {name(a)!r} and {name(b)!r}"))
+    for g in groups:
+        for n in boxed:
+            if n is g or n.get("type") == "group" and _inside(g, n):
+                continue
+            if _inter(g, n) and not _inside(n, g):
+                out.append(CanvasIssue("warning", f"{name(n)!r} straddles the border of group {name(g)!r}"))
+    return out
+
+
+def _check_text_links(nodes: List[dict], resolve_note) -> List[CanvasIssue]:
+    """Every [[wikilink]] in a text card must point at an existing note
+    (`resolve_note(target) -> bool`); a `#heading` that is not in the note
+    silently opens the top of it, so flag that too."""
+    out: List[CanvasIssue] = []
+    for n in nodes:
+        if n.get("type") != "text":
+            continue
+        for m in _WIKILINK.finditer(n.get("text", "")):
+            target = m.group(1)
+            note, _, heading = target.partition("#")
+            res = resolve_note(note, heading)
+            if res == "missing":
+                out.append(CanvasIssue("error", f"text card {n['id']}: link target not found: [[{note}]]"))
+            elif res == "no_heading":
+                out.append(CanvasIssue("warning", f"text card {n['id']}: heading {heading!r} not found in [[{note}]]"))
+    return out
+
+
+_WIKILINK = re.compile(r"\[\[([^\]|]+)(?:\|([^\]]+))?\]\]")
+
+
+def normalize_card(card: dict) -> dict:
+    """One card shape from either input dialect. New: {note, heading?,
+    alias?, desc?, status?|color?, wide?, id?} or {text, color?}; legacy
+    {kind:"file", file, subpath?, label?} is a note card without a
+    description; {kind:"embed", file} is a real Obsidian file node."""
+    c = dict(card)
+    kind = c.get("kind")
+    if kind == "embed":
+        c["kind"] = "embed"
+    elif c.get("note") or c.get("file"):
+        c["kind"] = "note"
+        c["note"] = c.get("note") or c["file"]
+        if not c.get("heading") and c.get("subpath"):
+            c["heading"] = c["subpath"].lstrip("#")
     else:
-        node["text"] = card.get("text", card.get("label", ""))
+        c["kind"] = "text"
+    if c.get("status") and not c.get("color"):
+        c["color"] = STATUS_COLORS.get(c["status"], c["status"])
+    return c
+
+
+def card_text(c: dict) -> str:
+    if c["kind"] == "note":
+        stem = PurePosixPath(c["note"]).stem
+        target = stem + (f"#{c['heading']}" if c.get("heading") else "")
+        alias = c.get("alias") or c.get("label") or c.get("heading") or stem
+        text = f"[[{target}|{alias}]]"
+        if c.get("desc"):
+            text += f"\n*{c['desc']}*"
+        return text
+    return c.get("text", c.get("label", ""))
+
+
+def _visible(text: str) -> str:
+    text = _WIKILINK.sub(lambda m: m.group(2) or m.group(1), text)
+    return text.replace("*", "")
+
+
+def estimate_height(text: str, width: int) -> int:
+    """Rendered height of a text card: ~8.2px per character, 24px lines.
+    Deliberately a little generous - clipped text is worse than slack."""
+    per_line = max(10, int((width - 40) / 8.2))
+    lines = sum(max(1, -(-len(line) // per_line)) for line in _visible(text).split("\n"))
+    return max(64, -(-(28 + 24 * lines) // 4) * 4)
+
+
+def _node(kind: str, x: int, y: int, w: int, h: int, **extra) -> dict:
+    node = {"id": new_id(), "type": kind, "x": x, "y": y, "width": w, "height": h}
+    node.update({k: v for k, v in extra.items() if v is not None})
     return node
 
 
-def build_stage_layout(stages: List[dict]) -> Tuple[List[dict], List[dict]]:
-    """Fresh left-to-right HUB canvas (H7 default) for a brand-new HUB:
-    one group per stage with a text card for its goal and file cards
-    stacked below, and a sequential 'next' spine between consecutive
-    stages (H8 default main spine; branch/alternative/prerequisite/return
-    edges are for the caller to add explicitly via extra_edges, this
-    function only builds the default sequential backbone).
+def _card_node(card: dict, x: int, y: int, width: int, height: Optional[int] = None) -> dict:
+    c = normalize_card(card)
+    if c["kind"] == "embed":
+        return _node("file", x, y, width, height or 320, file=c["note"], subpath=c.get("subpath"),
+                     color=c.get("color"))
+    text = card_text(c)
+    return _node("text", x, y, width, height or estimate_height(text, width), text=text, color=c.get("color"))
 
-    `stages`: [{"name", "goal", "cards": [{"kind": "file"|"text",
-    "file"/"text", "subpath"?}]}]
-    """
+
+def _pack_cards(cards: List[dict], x0: int, y0: int, width: int, nodes: List[dict], ids: Dict[str, str]) -> int:
+    """Masonry into two columns: a normal card goes into the shorter
+    column; a wide card (or a long description) spans both. Returns the
+    bottom y of the packed block."""
+    colw = (width - CARD_GAP) // 2
+    ys = [y0, y0]
+    for raw in cards:
+        c = normalize_card(raw)
+        text = card_text(c)
+        wide = bool(c.get("wide")) or c["kind"] == "embed" or len(_visible(text)) > 190
+        if wide:
+            y = max(ys)
+            node = _card_node(c, x0, y, width)
+            ys = [y + node["height"] + CARD_GAP] * 2
+        else:
+            i = 0 if ys[0] <= ys[1] else 1
+            node = _card_node(c, x0 + i * (colw + CARD_GAP), ys[i], colw)
+            ys[i] += node["height"] + CARD_GAP
+        nodes.append(node)
+        if c.get("id"):
+            ids[c["id"]] = node["id"]
+    return max(ys) - CARD_GAP
+
+
+def _stage_header_text(stage: dict) -> str:
+    parts = []
+    if stage.get("goal"):
+        parts.append(f"**Цель:** {stage['goal']}")
+    if stage.get("action"):
+        parts.append(f"**Делаем:** {stage['action']}")
+    if stage.get("expected_result"):
+        parts.append(f"**Результат:** {stage['expected_result']}")
+    return "\n".join(parts)
+
+
+def _layout_stage(stage: dict, ids: Dict[str, str]) -> Tuple[List[dict], int]:
+    """A stage group with its goal card, cards and nested subgroups,
+    positioned from (0, 0). Returns (nodes, height)."""
     nodes: List[dict] = []
-    edges: List[dict] = []
-    x = 0
-    stage_group_ids = []
-    for stage in stages:
-        cards = stage.get("cards", [])
-        height = STAGE_HEADER_HEIGHT + STAGE_PADDING + len(cards) * (CARD_HEIGHT + CARD_GAP)
-        width = STAGE_WIDTH
-        group_id = new_id()
-        nodes.append({"id": group_id, "type": "group", "x": x, "y": 0,
-                      "width": width, "height": max(height, STAGE_HEADER_HEIGHT), "label": stage["name"]})
-        stage_group_ids.append(group_id)
-        if stage.get("goal"):
-            nodes.append(_card_node("text", x + STAGE_PADDING, STAGE_PADDING,
-                                     width - 2 * STAGE_PADDING, STAGE_HEADER_HEIGHT - STAGE_PADDING,
-                                     {"text": stage["goal"]}))
-        card_y = STAGE_HEADER_HEIGHT + STAGE_PADDING
-        for card in cards:
-            nodes.append(_card_node(card.get("kind", "file"), x + STAGE_PADDING, card_y,
-                                     width - 2 * STAGE_PADDING, CARD_HEIGHT, card))
-            card_y += CARD_HEIGHT + CARD_GAP
-        x += width + STAGE_GAP
+    group = _node("group", 0, 0, GROUP_W, 0, label=stage["name"], color=stage.get("color"))
+    nodes.append(group)
+    ids[stage.get("id") or stage["name"]] = group["id"]
+    y = PAD
+    header = _stage_header_text(stage)
+    if header:
+        h = _card_node({"text": header}, PAD, y, INNER_W)
+        nodes.append(h)
+        y += h["height"] + CARD_GAP
+    if stage.get("cards"):
+        y = _pack_cards(stage["cards"], PAD, y, INNER_W, nodes, ids) + CARD_GAP
+    for sub in stage.get("subgroups", []):
+        y += LABEL_SPACE - CARD_GAP if stage.get("cards") or header else LABEL_SPACE
+        sg = _node("group", PAD, y, INNER_W, 0, label=sub["name"], color=sub.get("color"))
+        nodes.append(sg)
+        if sub.get("id"):
+            ids[sub["id"]] = sg["id"]
+        bottom = _pack_cards(sub.get("cards", []), PAD + SUB_PAD, y + SUB_PAD, INNER_W - 2 * SUB_PAD, nodes, ids)
+        sg["height"] = bottom + SUB_PAD - y
+        y += sg["height"] + CARD_GAP
+    group["height"] = y - CARD_GAP + PAD
+    return nodes, group["height"]
 
-    for i in range(len(stage_group_ids) - 1):
-        edges.append({"id": new_id(), "fromNode": stage_group_ids[i], "fromSide": "right",
-                       "toNode": stage_group_ids[i + 1], "toSide": "left", "label": "next"})
+
+def _shift(nodes: List[dict], dx: int, dy: int) -> None:
+    for n in nodes:
+        n["x"] += dx
+        n["y"] += dy
+
+
+def _bbox(nodes: List[dict]) -> Tuple[int, int, int, int]:
+    return (min(n["x"] for n in nodes), min(n["y"] for n in nodes),
+            max(n["x"] + n["width"] for n in nodes), max(n["y"] + n["height"] for n in nodes))
+
+
+def _auto_sides(a: dict, b: dict) -> Tuple[str, str]:
+    a_r, b_r = a["x"] + a["width"], b["x"] + b["width"]
+    overlap_y = a["y"] < b["y"] + b["height"] and b["y"] < a["y"] + a["height"]
+    if overlap_y:
+        return ("right", "left") if b["x"] >= a_r - 1 else ("left", "right") if b_r <= a["x"] + 1 else ("bottom", "top")
+    return ("bottom", "top") if b["y"] > a["y"] else ("top", "bottom")
+
+
+def build_hub_layout(spec: dict) -> Tuple[List[dict], List[dict]]:
+    """A fresh HUB canvas in the reference's idiom (HUB RAG 2).
+
+    spec = {
+      "stages": [{id?, name, zone?, row?, color?, goal?, action?, expected_result?, next_label?,
+                  cards: [card...], subgroups: [{id?, name, color?, cards}]}],
+      "controls": [{id, text, color?, near: <stage id>, place: "above"|"below"}],
+      "edges": [{from, to, label?, color?}]   # ids of stages/cards/controls/subgroups
+      "spine": true,                           # chain consecutive stages
+      "legend": {"4": "..."},                  # overrides DEFAULT_LEGEND texts
+    }
+    Stages with the same `zone` share a macro group; zones stack top to
+    bottom, stages inside a zone run left to right and wrap into rows
+    after MAX_COLS (or by explicit `row`). Colours of used statuses are
+    explained by an auto legend.
+    """
+    stages = spec.get("stages", [])
+    ids: Dict[str, str] = {}
+    layouts = []
+    for st in stages:
+        sn, sh = _layout_stage(st, ids)
+        layouts.append((st, sn, sh))
+
+    zone_order: List[Optional[str]] = []
+    for st, _, _ in layouts:
+        z = st.get("zone")
+        if z not in zone_order:
+            zone_order.append(z)
+
+    nodes: List[dict] = []
+    stage_nodes: Dict[str, dict] = {}
+    cursor_y = 0
+
+    used = set()
+    for st, sn, _ in layouts:
+        for n in sn:
+            if n.get("color"):
+                used.add(n["color"])
+    for c in spec.get("controls", []):
+        if c.get("color"):
+            used.add(c["color"])
+    legend_texts = {**DEFAULT_LEGEND, **spec.get("legend", {})}
+    legend_colors = [c for c in sorted(used) if c in legend_texts]
+    if legend_colors and not spec.get("no_legend"):
+        lg = _node("group", 0, cursor_y, GROUP_W, 0, label="Легенда")
+        lnodes = [lg]
+        by = _pack_cards([{"text": legend_texts[c], "color": c} for c in legend_colors],
+                         PAD, cursor_y + PAD, INNER_W, lnodes, {})
+        lg["height"] = by + PAD - cursor_y
+        nodes += lnodes
+        cursor_y += lg["height"] + LABEL_SPACE + 60
+
+    controls = spec.get("controls", [])
+    zone_boxes: Dict[Optional[str], Tuple[int, int]] = {}
+    for zi, z in enumerate(zone_order):
+        members = [(st, sn, sh) for st, sn, sh in layouts if st.get("zone") == z]
+        rows: Dict[int, List] = {}
+        auto_row = 0
+        for i, m in enumerate(members):
+            r = m[0].get("row")
+            rows.setdefault(r if r is not None else i // MAX_COLS, []).append(m)
+        zone_x = 0
+        content_x = zone_x + (ZONE_PAD_X if z else 0)
+        # room for controls hanging above this zone / below the previous one
+        member_ids = {m[0].get("id") or m[0]["name"] for m in members}
+        above = [c for c in controls if c.get("near") in member_ids and c.get("place", "above") == "above"]
+        if above:
+            cursor_y += max(estimate_height(c["text"], CONTROL_W) for c in above) + 100
+        zone_top = cursor_y
+        row_y = cursor_y + (ZONE_PAD_TOP if z else 0)
+        zone_nodes: List[dict] = []
+        for rkey in sorted(rows):
+            row = rows[rkey]
+            row_h = 0
+            for col, (st, sn, sh) in enumerate(row):
+                _shift(sn, content_x + col * (GROUP_W + STAGE_GAP), row_y)
+                zone_nodes += sn
+                stage_nodes[st.get("id") or st["name"]] = sn[0]
+                row_h = max(row_h, sh)
+            row_y += row_h + LABEL_SPACE + 40
+        row_y -= LABEL_SPACE + 40
+        if z:
+            gb = _bbox(zone_nodes)
+            zg = _node("group", gb[0] - ZONE_PAD_X, zone_top, gb[2] - gb[0] + 2 * ZONE_PAD_X,
+                       gb[3] + ZONE_PAD_BOTTOM - zone_top, label=z)
+            nodes.append(zg)
+            ids[f"zone:{z}"] = zg["id"]
+            zone_bottom = zg["y"] + zg["height"]
+        else:
+            zone_bottom = row_y
+        nodes += zone_nodes
+        below = [c for c in controls if c.get("near") in member_ids and c.get("place") == "below"]
+        cursor_y = zone_bottom + ZONE_GAP
+        if below:
+            cursor_y += max(estimate_height(c["text"], CONTROL_W) for c in below) + 100
+        zone_boxes[z] = (zone_top, zone_bottom)
+
+    by_id = {n["id"]: n for n in nodes}
+    for c in controls:
+        near = stage_nodes.get(c.get("near"))
+        if near is None:
+            continue
+        h = estimate_height(c["text"], CONTROL_W)
+        zt, zb = zone_boxes[next(st.get("zone") for st, _, _ in layouts if (st.get("id") or st["name"]) == c["near"])]
+        cx = near["x"] + (near["width"] - CONTROL_W) // 2
+        y = zt - h - 100 if c.get("place", "above") == "above" else zb + 100
+        node = _node("text", cx, y, CONTROL_W, h, text=c["text"], color=c.get("color"))
+        nodes.append(node)
+        ids[c["id"]] = node["id"]
+    by_id = {n["id"]: n for n in nodes}
+
+    edges: List[dict] = []
+
+    def add_edge(a_id: str, b_id: str, label=None, color=None):
+        a, b = by_id[a_id], by_id[b_id]
+        fs, ts = _auto_sides(a, b)
+        e = {"id": new_id(), "fromNode": a_id, "fromSide": fs, "toNode": b_id, "toSide": ts}
+        if label:
+            e["label"] = label
+        if color:
+            e["color"] = color
+        edges.append(e)
+
+    if spec.get("spine", True):
+        for i in range(len(stages) - 1):
+            add_edge(ids[stages[i].get("id") or stages[i]["name"]],
+                     ids[stages[i + 1].get("id") or stages[i + 1]["name"]], stages[i].get("next_label"))
+    for e in spec.get("edges", []):
+        add_edge(ids[e["from"]], ids[e["to"]], e.get("label"), e.get("color"))
     return nodes, edges
+
+
+def build_stage_layout(stages: List[dict]) -> Tuple[List[dict], List[dict]]:
+    """Compatibility wrapper: a bare stage list is a spec with only stages."""
+    return build_hub_layout({"stages": stages})
 
 
 def canvas_hash(text: str) -> str:
@@ -238,14 +547,18 @@ def add_card_near_group(nodes: List[dict], group: dict, card: dict) -> dict:
     resizing into or overlapping it. This does not touch `group` itself.
     """
     gx, gy, gw, gh = group["x"], group["y"], group["width"], group["height"]
-    overflow_bottom = gy + gh
-    for n in nodes:
-        if n is group:
-            continue
-        nx, ny, nw, nh = n.get("x", 0), n.get("y", 0), n.get("width", 0), n.get("height", 0)
-        overlaps_x = nx < gx + gw and nx + nw > gx
-        below_group = ny >= gy + gh - 1
-        if overlaps_x and below_group:
-            overflow_bottom = max(overflow_bottom, ny + nh)
-    y = overflow_bottom + CARD_GAP
-    return _card_node(card.get("kind", "file"), gx, y, gw, card.get("height", CARD_HEIGHT), card)
+    width = min(gw, INNER_W)
+    node = _card_node(card, gx, gy + gh + CARD_GAP, width, card.get("height"))
+    # Slide down past anything the card would land on - an enclosing zone
+    # box, cards from an earlier add-card, a group of the next row - so it
+    # never overlaps (H9) and stays as close under the stage as is free.
+    moved = True
+    while moved:
+        moved = False
+        for n in nodes:
+            if n is group or not all(isinstance(n.get(k), (int, float)) for k in ("x", "y", "width", "height")):
+                continue
+            if _inter(node, n):
+                node["y"] = n["y"] + n["height"] + CARD_GAP
+                moved = True
+    return node

@@ -11,22 +11,30 @@ the Canvas side is written through `lib/obsidian_common/canvas.py`, which
 never touches an existing node/edge's id/x/y/width/height - only ever
 appends (H9: preserve manual layout, add new material next to a stage).
 
+Look (reference: a hand-made HUB, "HUB RAG 2"): macro zones holding stage
+groups; a stage = goal card + two columns of text cards, each card a
+`[[note#heading|alias]]` link plus an italic line saying what that note
+gives *at this point of the route*; nested subgroups; colour = status
+with an auto legend; labelled arrows for branches and loops; control
+nodes (actor/system) hanging above or below a zone.
+
 Subcommands
 -----------
   check-name  - REQ-FND-0001 uniqueness for BOTH HUB_<title>.md/.canvas.
-  new         - write the pair from a stages description. Dry run by
-                default; --apply to write both files.
-  validate    - JSON Canvas structural checks (§3.9 "Проверки").
-  add-card    - add one file/text card positioned next to an existing
-                stage group, without moving anything already there.
-  add-stage   - append a new stage group (+ its cards) to the right of
-                the existing layout, and its section to the paired .md.
+  new         - write the pair from a spec (stages, controls, edges). Dry run
+                by default; --apply to write both files.
+  validate    - structure, links inside cards, overlaps, group borders.
+  preview     - render a canvas to a standalone SVG for a visual check.
+  add-card    - add one card below an existing stage group, moving nothing.
+  add-stage   - append a new stage group to the right of the existing layout,
+                and its section to the paired .md.
 """
 from __future__ import annotations
 
 import argparse
 import datetime as dt
 import json
+import re
 import sys
 from pathlib import Path, PurePosixPath
 from typing import List
@@ -64,8 +72,93 @@ def cmd_check_name(args, profile) -> int:
     return 0 if result["unique"] else 1
 
 
+def make_resolver(profile: VaultProfile):
+    """resolve_note(stem, heading) -> ok | missing | no_heading, for the
+    wikilinks inside text cards."""
+    index = linkgraph.build_basename_index(profile.vault_path, profile.scope)
+    canvases = {PurePosixPath(r).name.casefold() for r in
+                linkgraph.iter_vault_files(profile.vault_path, profile.scope, extensions={".canvas"})}
+
+    def resolve(note: str, heading: str = "") -> str:
+        # a link target is a note name, not a path: only a trailing ".md" is an
+        # extension ("... (ГОСТ 34.602-2020)" must keep its dots)
+        name = note.rsplit("/", 1)[-1]
+        if name.casefold().endswith(".canvas"):
+            return "ok" if name.casefold() in canvases else "missing"
+        name = name[:-3] if name.endswith(".md") else name
+        paths = index.get(pathutil.normalize_basename(name), [])
+        if not paths:
+            return "missing"
+        if heading:
+            body = (Path(profile.vault_path) / paths[0]).read_text(encoding="utf-8", errors="ignore")
+            if not re.search(rf"^#+\s+{re.escape(heading)}\s*$", body, re.M):
+                return "no_heading"
+        return "ok"
+    return resolve
+
+
+def _spec_from_file(path: str) -> dict:
+    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    return {"stages": data} if isinstance(data, list) else data
+
+
+def _all_cards(spec: dict):
+    for st in spec.get("stages", []):
+        for c in st.get("cards", []):
+            yield st["name"], c
+        for sub in st.get("subgroups", []):
+            for c in sub.get("cards", []):
+                yield f"{st['name']} / {sub['name']}", c
+
+
+def _check_spec(profile: VaultProfile, spec: dict) -> tuple:
+    """(errors, warnings) for the input spec, before any layout."""
+    errors, warns = [], []
+    ids = {}
+    for st in spec.get("stages", []):
+        sid = st.get("id") or st["name"]
+        if sid in ids:
+            errors.append(f"duplicate stage id {sid!r}")
+        ids[sid] = "stage"
+        if not st.get("goal"):
+            warns.append(f"stage {st['name']!r} has no goal")
+    for where, raw in _all_cards(spec):
+        c = cv.normalize_card(raw)
+        if c.get("id"):
+            if c["id"] in ids:
+                errors.append(f"duplicate id {c['id']!r}")
+            ids[c["id"]] = "card"
+        if c["kind"] in ("note", "embed"):
+            if not (Path(profile.vault_path) / c["note"]).is_file():
+                errors.append(f"[{where}] card target does not exist: {c['note']}")
+            elif c["kind"] == "note" and not c.get("desc"):
+                warns.append(f"[{where}] {c['note']}: no desc - say what this note gives at this point of the route")
+    for ctl in spec.get("controls", []):
+        ids[ctl["id"]] = "control"
+        if ctl.get("near") not in ids:
+            errors.append(f"control {ctl['id']!r}: unknown stage {ctl.get('near')!r}")
+    for e in spec.get("edges", []):
+        for end in ("from", "to"):
+            if e[end] not in ids and not e[end].startswith("zone:"):
+                errors.append(f"edge {e['from']!r}->{e['to']!r}: unknown {end} id {e[end]!r}")
+    return errors, warns
+
+
+def _card_md_line(raw: dict) -> str:
+    c = cv.normalize_card(raw)
+    if c["kind"] == "text":
+        return ""
+    stem = PurePosixPath(c["note"]).stem
+    target = stem + (f"#{c['heading']}" if c.get("heading") else "")
+    alias = c.get("alias") or c.get("label") or c.get("heading") or stem
+    line = f"- [[{target}|{alias}]]" if alias != target else f"- [[{target}]]"
+    return line + (f" — {c['desc']}" if c.get("desc") else "")
+
+
 def _stage_md_section(i: int, stage: dict) -> str:
     lines = [f"### {i}. {stage['name']}", ""]
+    if stage.get("zone"):
+        lines += [f"**Зона:** {stage['zone']}", ""]
     if stage.get("goal"):
         lines += [f"**Цель:** {stage['goal']}", ""]
     if stage.get("materials"):
@@ -74,11 +167,49 @@ def _stage_md_section(i: int, stage: dict) -> str:
         lines += [f"**Действие:** {stage['action']}", ""]
     if stage.get("expected_result"):
         lines += [f"**Ожидаемый результат:** {stage['expected_result']}", ""]
-    for card in stage.get("cards", []):
-        if card.get("kind", "file") == "file":
-            label = card.get("label") or PurePosixPath(card["file"]).stem
-            lines.append(f"- [[{card['file'][:-3]}{card.get('subpath','')}|{label}]]")
+    cards = [l for l in (_card_md_line(c) for c in stage.get("cards", [])) if l]
+    lines += cards + ([""] if cards else [])
+    for sub in stage.get("subgroups", []):
+        sub_cards = [l for l in (_card_md_line(c) for c in sub.get("cards", [])) if l]
+        lines += [f"**{sub['name']}**"] + sub_cards + [""]
     return "\n".join(lines).rstrip() + "\n"
+
+
+def _branches_md(spec: dict) -> str:
+    names = {}
+    for st in spec.get("stages", []):
+        names[st.get("id") or st["name"]] = st["name"]
+    for _, c in _all_cards(spec):
+        c = cv.normalize_card(c)
+        if c.get("id"):
+            names[c["id"]] = c.get("alias") or c.get("heading") or PurePosixPath(c.get("note", c["id"])).stem
+    for ctl in spec.get("controls", []):
+        names[ctl["id"]] = ctl["text"].split("\n")[0]
+    rows = []
+    sts = spec.get("stages", [])
+    if spec.get("spine", True):
+        for a, b in zip(sts, sts[1:]):
+            rows.append(f"- {a['name']} → {b['name']}" + (f": {a['next_label']}" if a.get("next_label") else ""))
+    for e in spec.get("edges", []):
+        rows.append(f"- {names.get(e['from'], e['from'])} → {names.get(e['to'], e['to'])}"
+                    + (f": {e['label']}" if e.get("label") else ""))
+    return "\n".join(rows)
+
+
+def _legend_md(spec: dict) -> str:
+    used = set()
+    for st in spec.get("stages", []):
+        if st.get("color"):
+            used.add(st["color"])
+        for sub in st.get("subgroups", []):
+            if sub.get("color"):
+                used.add(sub["color"])
+    for _, raw in _all_cards(spec):
+        col = cv.normalize_card(raw).get("color")
+        if col:
+            used.add(col)
+    texts = {**cv.DEFAULT_LEGEND, **spec.get("legend", {})}
+    return "\n".join(f"- цвет {c}: {texts[c]}" for c in sorted(used) if c in texts)
 
 
 def cmd_new(args, profile) -> int:
@@ -90,15 +221,25 @@ def cmd_new(args, profile) -> int:
         print(json.dumps(name_check, ensure_ascii=False, indent=2, default=str), file=sys.stderr)
         return 2
 
-    stages = json.loads(Path(args.stages_file).read_text(encoding="utf-8"))
-    for stage in stages:
-        for card in stage.get("cards", []):
-            if card.get("kind", "file") == "file" and not (Path(profile.vault_path) / card["file"]).is_file():
-                print(f"error: card target does not exist: {card['file']}", file=sys.stderr)
-                return 2
+    spec = _spec_from_file(args.spec_file)
+    stages = spec.get("stages", [])
+    if not stages:
+        print("error: spec has no stages", file=sys.stderr)
+        return 2
+    errors, warns = _check_spec(profile, spec)
+    for w in warns:
+        print(f"warning: {w}", file=sys.stderr)
+    if errors:
+        print("error: invalid spec:", file=sys.stderr)
+        for e in errors:
+            print(f"  - {e}", file=sys.stderr)
+        return 2
 
-    nodes, edges = cv.build_stage_layout(stages)
-    issues = cv.validate_canvas(profile.vault_path, nodes, edges)
+    nodes, edges = cv.build_hub_layout(spec)
+    issues = cv.validate_canvas(profile.vault_path, nodes, edges, resolve_note=make_resolver(profile))
+    for i in issues:
+        if i.severity != "error":
+            print(f"warning: {i.message}", file=sys.stderr)
     errors = [i for i in issues if i.severity == "error"]
     if errors:
         print("error: generated canvas failed validation:", file=sys.stderr)
@@ -116,14 +257,16 @@ def cmd_new(args, profile) -> int:
     }
     terms_body = "\n".join(f"- {t}" for t in terms) if terms else "_нет_"
     stages_body = "\n\n".join(_stage_md_section(i, s) for i, s in enumerate(stages, start=1))
-    branches_body = args.branches or "_нет_"
+    branches_body = args.branches or _branches_md(spec) or "_нет_"
+    legend = _legend_md(spec)
     md_body = (
         f"\n# HUB — {args.title}\n\n"
         f"## Summary\n\n{args.summary}\n\n"
         f"## Основные термины\n\n{terms_body}\n\n"
         f"## Этапы\n\n{stages_body}\n\n"
         f"## Ветвления и альтернативы\n\n{branches_body}\n\n"
-        f"## Связанный Canvas\n\n![[{PurePosixPath(name_check['canvas_path']).name}]]\n"
+        + (f"## Легенда цветов\n\n{legend}\n\n" if legend else "")
+        +         f"## Связанный Canvas\n\n![[{PurePosixPath(name_check['canvas_path']).name}]]\n"
     )
     md_content = serialize_frontmatter(meta) + md_body
     canvas_content = cv.serialize_canvas(nodes, edges)
@@ -148,8 +291,8 @@ def cmd_new(args, profile) -> int:
     canvas_rec = cv.write_canvas(profile.vault_path, name_check["canvas_path"], nodes, edges, based_on_hash=None)
     print(json.dumps({"path": name_check["canvas_path"], **canvas_rec.__dict__}, ensure_ascii=False, indent=2, default=str))
     if canvas_rec.status == "applied":
-        print("\nindex_dirty: obsidian-index-sync (skill 18) is not built yet - "
-              "neither half of this HUB is indexed.", file=sys.stderr)
+        print(f"\nindex_dirty: run obsidian-index-sync on {name_check['md_path']} and "
+              f"{name_check['canvas_path']} - neither half is in the search index yet.", file=sys.stderr)
     return 0 if canvas_rec.status == "applied" else 1
 
 
@@ -162,7 +305,7 @@ def cmd_validate(args, profile) -> int:
     if parsed.error:
         print(json.dumps({"path": args.path, "error": parsed.error}, ensure_ascii=False, indent=2, default=str))
         return 1
-    issues = cv.validate_canvas(profile.vault_path, parsed.nodes, parsed.edges)
+    issues = cv.validate_canvas(profile.vault_path, parsed.nodes, parsed.edges, resolve_note=make_resolver(profile))
     result = {
         "path": args.path, "nodes": len(parsed.nodes), "edges": len(parsed.edges),
         "issues": [{"severity": i.severity, "message": i.message} for i in issues],
@@ -172,13 +315,26 @@ def cmd_validate(args, profile) -> int:
     return 0 if result["ok"] else 1
 
 
+def cmd_preview(args, profile) -> int:
+    full = Path(profile.vault_path) / args.path
+    parsed = cv.parse_canvas(full.read_text(encoding="utf-8")) if full.is_file() else None
+    if parsed is None or parsed.error:
+        print(f"error: cannot read canvas {args.path}: {parsed.error if parsed else 'not found'}", file=sys.stderr)
+        return 2
+    out = Path(args.out)
+    out.write_text(cv.render_svg(parsed.nodes, parsed.edges), encoding="utf-8")
+    print(json.dumps({"svg": str(out), "nodes": len(parsed.nodes), "edges": len(parsed.edges)}, ensure_ascii=False))
+    return 0
+
+
 def cmd_add_card(args, profile) -> int:
     full = Path(profile.vault_path) / args.canvas
     if not full.is_file():
         print(f"error: canvas not found: {args.canvas}", file=sys.stderr)
         return 2
-    if args.file and not (Path(profile.vault_path) / args.file).is_file():
-        print(f"error: file target does not exist: {args.file}", file=sys.stderr)
+    note = args.note or args.file
+    if note and not (Path(profile.vault_path) / note).is_file():
+        print(f"error: note does not exist: {note}", file=sys.stderr)
         return 2
     raw = full.read_text(encoding="utf-8")
     parsed = cv.parse_canvas(raw)
@@ -190,8 +346,10 @@ def cmd_add_card(args, profile) -> int:
         labels = sorted({n.get("label") for n in parsed.nodes if n.get("type") == "group"})
         print(f"error: no group labeled {args.stage!r}. Existing stages: {labels}", file=sys.stderr)
         return 2
-    card = {"kind": "file" if args.file else "text",
-            "file": args.file, "subpath": args.subpath, "text": args.text}
+    card = {"note": note, "heading": (args.heading or (args.subpath or "").lstrip("#")) or None,
+            "alias": args.alias, "desc": args.desc, "status": args.status, "text": args.text}
+    if not note:
+        card.pop("note")
     new_node = cv.add_card_near_group(parsed.nodes, group, card)
 
     if not args.apply:
@@ -202,7 +360,7 @@ def cmd_add_card(args, profile) -> int:
                            based_on_hash=cv.canvas_hash(raw))
     print(json.dumps({"path": args.canvas, **rec.__dict__}, ensure_ascii=False, indent=2, default=str))
     if rec.status == "applied":
-        print("\nindex_dirty: obsidian-index-sync (skill 18) is not built yet.", file=sys.stderr)
+        print(f"\nindex_dirty: run obsidian-index-sync on {args.canvas}.", file=sys.stderr)
     return 0 if rec.status == "applied" else 1
 
 
@@ -212,10 +370,14 @@ def cmd_add_stage(args, profile) -> int:
         print(f"error: canvas not found: {args.canvas}", file=sys.stderr)
         return 2
     stage = json.loads(Path(args.stage_file).read_text(encoding="utf-8"))
-    for card in stage.get("cards", []):
-        if card.get("kind", "file") == "file" and not (Path(profile.vault_path) / card["file"]).is_file():
-            print(f"error: card target does not exist: {card['file']}", file=sys.stderr)
-            return 2
+    errors, warns = _check_spec(profile, {"stages": [stage]})
+    for w in warns:
+        print(f"warning: {w}", file=sys.stderr)
+    if errors:
+        print("error: invalid stage:", file=sys.stderr)
+        for e in errors:
+            print(f"  - {e}", file=sys.stderr)
+        return 2
 
     raw = canvas_full.read_text(encoding="utf-8")
     parsed = cv.parse_canvas(raw)
@@ -226,22 +388,30 @@ def cmd_add_stage(args, profile) -> int:
         print(json.dumps({"status": "unchanged", "detail": f"a stage group named {stage['name']!r} already exists"},
                           ensure_ascii=False, indent=2, default=str))
         return 0
-    max_right = max((n["x"] + n["width"] for n in parsed.nodes if n.get("type") == "group"), default=-cv.STAGE_GAP)
-    new_nodes, new_edges = cv.build_stage_layout([stage])
-    shift = max_right + cv.STAGE_GAP
-    for n in new_nodes:
-        n["x"] += shift
-    new_group_id = new_nodes[0]["id"]
-    last_existing_group = max(
-        (n for n in parsed.nodes if n.get("type") == "group"), key=lambda n: n["x"], default=None
-    )
-    if last_existing_group is not None:
-        new_edges.append({"id": cv.new_id(), "fromNode": last_existing_group["id"], "fromSide": "right",
-                           "toNode": new_group_id, "toSide": "left", "label": "next"})
+
+    # The new stage hangs to the right of everything and is wired in from
+    # the previous stage: --after, else the last '### N. name' of the paired .md.
+    after_name = args.after
+    if not after_name:
+        md_text = (Path(profile.vault_path) / args.md).read_text(encoding="utf-8")
+        found = re.findall(r"^###\s+\d+\.\s+(.+?)\s*$", md_text, re.M)
+        after_name = found[-1] if found else None
+    after = cv.find_group_by_label(parsed.nodes, after_name) if after_name else None
+    max_right = max((n["x"] + n["width"] for n in parsed.nodes), default=-cv.STAGE_GAP)
+    new_nodes, new_edges = cv.build_hub_layout({"stages": [{**stage, "zone": None}], "no_legend": True})
+    new_group = new_nodes[0]
+    cv._shift(new_nodes, max_right + cv.STAGE_GAP, after["y"] if after else 0)
+    if after is not None:
+        fs, ts = cv._auto_sides(after, new_group)
+        new_edges.append({"id": cv.new_id(), "fromNode": after["id"], "fromSide": fs,
+                          "toNode": new_group["id"], "toSide": ts})
+    elif after_name:
+        print(f"warning: no group labelled {after_name!r}; the new stage is not wired to anything",
+              file=sys.stderr)
 
     combined_nodes = parsed.nodes + new_nodes
     combined_edges = parsed.edges + new_edges
-    issues = cv.validate_canvas(profile.vault_path, combined_nodes, combined_edges)
+    issues = cv.validate_canvas(profile.vault_path, combined_nodes, combined_edges, resolve_note=make_resolver(profile))
     errors = [i for i in issues if i.severity == "error"]
     if errors:
         print("error: resulting canvas would fail validation:", file=sys.stderr)
@@ -249,9 +419,7 @@ def cmd_add_stage(args, profile) -> int:
             print(f"  - {i.message}", file=sys.stderr)
         return 2
 
-    stage_number = 1 + sum(
-        1 for n in parsed.nodes if n.get("type") == "group"
-    )
+    stage_number = 1 + len(re.findall(r"^###\s+\d+\.", (Path(profile.vault_path) / args.md).read_text(encoding="utf-8"), re.M))
     md_addition = _stage_md_section(stage_number, stage)
 
     if not args.apply:
@@ -278,7 +446,7 @@ def cmd_add_stage(args, profile) -> int:
     md_rec = p.apply_patch(profile.vault_path, md_patch)
     print(json.dumps(md_rec.to_dict(), ensure_ascii=False, indent=2, default=str))
     if md_rec.status == "applied":
-        print("\nindex_dirty: obsidian-index-sync (skill 18) is not built yet.", file=sys.stderr)
+        print(f"\nindex_dirty: run obsidian-index-sync on {args.canvas} and {args.md}.", file=sys.stderr)
     return 0 if md_rec.status in ("applied", "unchanged") else 1
 
 
@@ -304,9 +472,9 @@ def main() -> int:
     p_new.add_argument("--terms")
     p_new.add_argument("--tags")
     p_new.add_argument("--branches", help="text for '## Ветвления и альтернативы'")
-    p_new.add_argument("--stages-file", required=True,
-                        help="JSON: [{name, goal, materials?, action?, expected_result?, "
-                             "cards:[{kind:file|text, file?, subpath?, text?, label?}]}]")
+    p_new.add_argument("--spec-file", "--stages-file", dest="spec_file", required=True,
+                        help="JSON spec {stages, controls?, edges?, spine?, legend?} or a bare stage list; "
+                             "see SKILL.md for the card shape")
     p_new.add_argument("--folder")
     p_new.add_argument("--apply", action="store_true")
 
@@ -316,16 +484,26 @@ def main() -> int:
     p_card = sub.add_parser("add-card", help="add one card next to an existing stage group", parents=[common])
     p_card.add_argument("--canvas", required=True)
     p_card.add_argument("--stage", required=True, help="the target group's label")
-    p_card.add_argument("--file", help="vault-relative path for a file card")
-    p_card.add_argument("--subpath", help="e.g. '#Heading' to anchor the file card to a section")
-    p_card.add_argument("--text", help="text for a text card (omit --file to make a text card)")
+    p_card.add_argument("--note", help="vault-relative path of the note to link")
+    p_card.add_argument("--file", help="alias of --note (older name)")
+    p_card.add_argument("--heading", help="anchor the link to a section of the note")
+    p_card.add_argument("--subpath", help="older form of --heading, '#Heading'")
+    p_card.add_argument("--alias", help="link text on the card")
+    p_card.add_argument("--desc", help="what this note gives at this point of the route (italic line)")
+    p_card.add_argument("--status", choices=sorted(cv.STATUS_COLORS), help="colour the card by status")
+    p_card.add_argument("--text", help="text for a plain text card (omit --note)")
     p_card.add_argument("--apply", action="store_true")
 
     p_stage = sub.add_parser("add-stage", help="append a new stage to the right of the existing layout", parents=[common])
     p_stage.add_argument("--canvas", required=True)
     p_stage.add_argument("--md", required=True, help="the paired HUB_<title>.md to also update")
+    p_stage.add_argument("--after", help="stage the new one follows (default: the last stage in the .md)")
     p_stage.add_argument("--stage-file", required=True, help="JSON: one stage object, same shape as in --stages-file")
     p_stage.add_argument("--apply", action="store_true")
+
+    p_prev = sub.add_parser("preview", help="render a canvas to a standalone SVG", parents=[common])
+    p_prev.add_argument("--path", required=True, help="vault-relative .canvas")
+    p_prev.add_argument("--out", required=True, help="output .svg path")
 
     args = ap.parse_args()
     try:
@@ -340,9 +518,11 @@ def main() -> int:
         return cmd_new(args, profile)
     if args.command == "validate":
         return cmd_validate(args, profile)
+    if args.command == "preview":
+        return cmd_preview(args, profile)
     if args.command == "add-card":
-        if not args.file and not args.text:
-            print("error: give --file (file card) or --text (text card)", file=sys.stderr)
+        if not (args.note or args.file or args.text):
+            print("error: give --note (link card) or --text (text card)", file=sys.stderr)
             return 2
         return cmd_add_card(args, profile)
     if args.command == "add-stage":

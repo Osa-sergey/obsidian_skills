@@ -96,8 +96,8 @@ O1 и H1 — уже подтверждённые определения MOC и H
 | H3 | Один маршрут для технического пользователя; разные novice/expert HUB при реально различной последовательности. |
 | H4 | Stage: `goal`, `materials`, `action`, `expected_result`; prerequisites/completion_criteria по необходимости. |
 | H6 | Progress tracking выключен; обновление HUB по команде или структурному изменению. |
-| H7 | Слева направо; swimlanes только для параллельных ролей/траекторий. |
-| H8 | Основной spine + `parallel`, `alternative`, `prerequisite`, `return`. |
+| H7 | Зоны сверху вниз, этапы зоны слева направо (перенос после 4 колонок); swimlanes только для параллельных ролей/траекторий. |
+| H8 | Основной spine с подписями + явные рёбра `parallel`, `alternative`, `prerequisite`, `return` с подписью. |
 | H9 | Сохранять ручные coordinates/IDs, новые nodes добавлять инкрементально; полный relayout по явной команде. |
 | H10 | В v1 нативный Obsidian Canvas без обязательного стороннего плагина. |
 
