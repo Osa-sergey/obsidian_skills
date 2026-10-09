@@ -79,7 +79,9 @@ python3 ~/.claude/skills/obsidian-hub/scripts/hub.py preview \
 - Edge `from`/`to` are stage, card, subgroup or control `id`s (a stage's id
   defaults to its name). Sides are chosen from the geometry.
 - Stages of one `zone` share a macro group; zones stack top to bottom, a
-  zone's stages run left to right and wrap after 4 (or set `row`).
+  zone's stages run left to right and wrap after 4 (or set `row`; set `col`
+  to put a stage in a given column - e.g. a loop-back stage right under the
+  stage it returns to, so the arrow does not cross other groups).
 - `--route-type workflow` (doing something) or `learning` (understanding).
 - Without `--apply` this prints the `.md` and counts only. The `.md` is
   generated from the same spec: stage sections with links+descriptions, the

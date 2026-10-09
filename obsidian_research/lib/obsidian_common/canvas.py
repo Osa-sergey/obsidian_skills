@@ -362,7 +362,7 @@ def build_hub_layout(spec: dict) -> Tuple[List[dict], List[dict]]:
     """A fresh HUB canvas in the reference's idiom (HUB RAG 2).
 
     spec = {
-      "stages": [{id?, name, zone?, row?, color?, goal?, action?, expected_result?, next_label?,
+      "stages": [{id?, name, zone?, row?, col?, color?, goal?, action?, expected_result?, next_label?,
                   cards: [card...], subgroups: [{id?, name, color?, cards}]}],
       "controls": [{id, text, color?, near: <stage id>, place: "above"|"below"}],
       "edges": [{from, to, label?, color?}]   # ids of stages/cards/controls/subgroups
@@ -432,7 +432,8 @@ def build_hub_layout(spec: dict) -> Tuple[List[dict], List[dict]]:
         for rkey in sorted(rows):
             row = rows[rkey]
             row_h = 0
-            for col, (st, sn, sh) in enumerate(row):
+            for i, (st, sn, sh) in enumerate(row):
+                col = st.get("col", i)  # explicit column keeps a loop-back stage right under its source
                 _shift(sn, content_x + col * (GROUP_W + STAGE_GAP), row_y)
                 zone_nodes += sn
                 stage_nodes[st.get("id") or st["name"]] = sn[0]
@@ -562,3 +563,67 @@ def add_card_near_group(nodes: List[dict], group: dict, card: dict) -> dict:
                 node["y"] = n["y"] + n["height"] + CARD_GAP
                 moved = True
     return node
+
+
+_SVG_COLORS = {"1": "#e5484d", "2": "#f08a24", "3": "#d9b100", "4": "#30a46c", "5": "#12a594", "6": "#8e4ec6"}
+
+
+def _wrap(text: str, width: int) -> List[str]:
+    per_line = max(10, int((width - 24) / 8.2))
+    lines: List[str] = []
+    for para in _visible(text).split("\n"):
+        words, cur = para.split(" "), ""
+        for w in words:
+            if cur and len(cur) + 1 + len(w) > per_line:
+                lines.append(cur)
+                cur = w
+            else:
+                cur = f"{cur} {w}".strip()
+        lines.append(cur)
+    return lines
+
+
+def render_svg(nodes: List[dict], edges: List[dict]) -> str:
+    """Standalone SVG of a canvas for a visual check outside Obsidian:
+    groups, coloured cards with wrapped text, labelled arrows. Text is
+    wrapped with the same width model as `estimate_height`, so clipped
+    cards show up here as text running past the card."""
+    from xml.sax.saxutils import escape
+    if not nodes:
+        return '<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"/>'
+    x0, y0, x1, y1 = _bbox(nodes)
+    m = 60
+    by_id = {n["id"]: n for n in nodes}
+    out = [f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="{x0 - m} {y0 - m} {x1 - x0 + 2 * m} {y1 - y0 + 2 * m}" '
+           f'width="{x1 - x0 + 2 * m}" height="{y1 - y0 + 2 * m}" font-family="sans-serif" font-size="15">',
+           f'<rect x="{x0 - m}" y="{y0 - m}" width="{x1 - x0 + 2 * m}" height="{y1 - y0 + 2 * m}" fill="#1e1e1e"/>',
+           '<defs><marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" '
+           'orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#9a9a9a"/></marker></defs>']
+    for n in (n for n in nodes if n.get("type") == "group"):
+        col = _SVG_COLORS.get(str(n.get("color")), "#7a7a7a")
+        out.append(f'<rect x="{n["x"]}" y="{n["y"]}" width="{n["width"]}" height="{n["height"]}" rx="10" '
+                   f'fill="{col}" fill-opacity="0.07" stroke="{col}" stroke-opacity="0.6" stroke-width="2"/>')
+        out.append(f'<text x="{n["x"]}" y="{n["y"] - 10}" fill="#bdbdbd" font-size="18">{escape(n.get("label", ""))}</text>')
+    for e in edges:
+        a, b = by_id.get(e.get("fromNode")), by_id.get(e.get("toNode"))
+        if not a or not b:
+            continue
+
+        def pt(n, side):
+            return {"right": (n["x"] + n["width"], n["y"] + n["height"] / 2), "left": (n["x"], n["y"] + n["height"] / 2),
+                    "top": (n["x"] + n["width"] / 2, n["y"]), "bottom": (n["x"] + n["width"] / 2, n["y"] + n["height"])}[side]
+        (ax, ay), (bx, by) = pt(a, e.get("fromSide", "right")), pt(b, e.get("toSide", "left"))
+        col = _SVG_COLORS.get(str(e.get("color")), "#9a9a9a")
+        out.append(f'<line x1="{ax}" y1="{ay}" x2="{bx}" y2="{by}" stroke="{col}" stroke-width="2" marker-end="url(#ar)"/>')
+        if e.get("label"):
+            out.append(f'<text x="{(ax + bx) / 2}" y="{(ay + by) / 2 - 6}" fill="#e0e0e0" text-anchor="middle" '
+                       f'paint-order="stroke" stroke="#1e1e1e" stroke-width="5">{escape(e["label"])}</text>')
+    for n in (n for n in nodes if n.get("type") != "group"):
+        col = _SVG_COLORS.get(str(n.get("color")), "#8a8a8a")
+        out.append(f'<rect x="{n["x"]}" y="{n["y"]}" width="{n["width"]}" height="{n["height"]}" rx="6" '
+                   f'fill="{col}" fill-opacity="0.22" stroke="{col}" stroke-width="1.5"/>')
+        text = n.get("text") or f"[{n.get('file', '')}]"
+        for i, line in enumerate(_wrap(text, n["width"])):
+            out.append(f'<text x="{n["x"] + 12}" y="{n["y"] + 24 + 24 * i}" fill="#e8e8e8">{escape(line)}</text>')
+    out.append("</svg>")
+    return "\n".join(out)
