@@ -2,7 +2,7 @@
 """obsidian-vault: register vaults and connect projects to them.
 
 This is the "подключать скиллы к проектам и vaults" mechanism described in
-obsidian_research/docs/adr/ADR-0008-skill-distribution.md: the obsidian-*
+docs/adr/ADR-0008-skill-distribution.md: the obsidian-*
 skills are installed once (user-level, ~/.claude/skills/), and each vault
 is registered once here; a project then "connects" with a two-line pointer
 file so the same installed skills work against any number of vaults

@@ -10,7 +10,7 @@ comparisons, contradictions, gaps, and recommendations, each traceable to a
 specific file and heading. Full spec:
 `docs/spec/skills/03-obsidian-research.md` (US-003); defaults `R1–R6` in
 `docs/spec/defaults.md` (both relative to this project's root, the
-`obsidian_research/` folder).
+repository root).
 
 This skill (and the two below) run from
 `~/.claude/skills/<name>/scripts/<file>.py` regardless of which project

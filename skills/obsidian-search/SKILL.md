@@ -11,7 +11,7 @@ and judging relevance are the next skills' job (obsidian-context,
 obsidian-research) or a plain `Read` call once you have a path. Full spec:
 `docs/spec/skills/01-obsidian-search.md` (US-001); defaults `S1–S6` and
 `REQ-RET-0003` in `docs/spec/defaults.md` (both paths relative to this
-project's root, i.e. the `obsidian_research/` folder — see below).
+project's root, i.e. the repository root — see below).
 
 ## Before the first call
 

@@ -5,8 +5,8 @@ This package holds the deterministic, algorithmic pieces that the skills in
 vault-profile resolution, path/name normalization, Markdown parsing,
 the Omnisearch HTTP client, and the wikilink graph/BFS engine.
 
-Spec reference: obsidian_research/docs/spec/foundation.md §2.2 (vault profile)
-and obsidian_research/docs/adr/ADR-0008-skill-distribution.md (why this lib
+Spec reference: docs/spec/foundation.md §2.2 (vault profile)
+and docs/adr/ADR-0008-skill-distribution.md (why this lib
 is shared rather than duplicated per skill).
 """
 

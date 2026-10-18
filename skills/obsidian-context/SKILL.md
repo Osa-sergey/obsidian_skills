@@ -14,7 +14,7 @@ actually matters — that reading and that judgment happen afterward, with
 `Read`/`obsidian-research`, using the paths this returns. Full spec:
 `docs/spec/skills/02-obsidian-context.md` (US-002); defaults `C1–C6` in
 `docs/spec/defaults.md` (both relative to this project's root, the
-`obsidian_research/` folder).
+repository root).
 
 This skill runs from `~/.claude/skills/obsidian-context/scripts/context.py`
 regardless of which project you're currently in — use that path directly,

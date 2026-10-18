@@ -6,7 +6,7 @@ __pycache__/
 
 # Machine-local vault connections/registry are never committed:
 # ~/.claude/obsidian/vaults/*.yaml lives outside this repo entirely.
-# obsidian_research/.claude/obsidian-vault.yaml (or any nested project's
+# .claude/obsidian-vault.yaml (or any nested project's
 # own copy) is machine-local connection state, not source (ADR-0008).
 # A mid-pattern '/' anchors to the .gitignore's own directory in Git's
 # rules, so this needs the explicit **/ prefix to match at any depth.

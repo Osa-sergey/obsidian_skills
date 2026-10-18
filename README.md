@@ -72,7 +72,7 @@ python3 bin/obsidian-vault register my-vault --path /path/to/vault --port 51361
 
 # 3. Point a project at it (run from inside that other project)
 cd /path/to/some/project
-python3 /path/to/this/obsidian_research/bin/obsidian-vault connect my-vault
+python3 /path/to/this/repo/bin/obsidian-vault connect my-vault
 
 # 4. Sanity check
 python3 bin/obsidian-vault doctor my-vault

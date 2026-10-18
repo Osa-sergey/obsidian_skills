@@ -1,6 +1,6 @@
 """Vault profile: connects the obsidian-* skills to a specific project/vault.
 
-Spec: obsidian_research/docs/spec/foundation.md §2.2 "Общий профиль vault".
+Spec: docs/spec/foundation.md §2.2 "Общий профиль vault".
 Rationale for the resolution order below: ADR-0008-skill-distribution.md.
 
 A "vault profile" is the one YAML file that knows where a vault lives, how
@@ -100,7 +100,7 @@ class ManagedFoldersConfig:
 @dataclasses.dataclass
 class EmbeddingsConfig:
     # ADR-0009: a local OpenAI-compatible HTTP server (LM Studio), not an
-    # embedding library inside this project - keeps obsidian_research a
+    # embedding library inside this project - keeps this project a
     # thin HTTP client (same shape as OmnisearchConfig) instead of pulling
     # in PyTorch. Dimension is deliberately not configured here: it is
     # read from the server's own first real response and pinned into the

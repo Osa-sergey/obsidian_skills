@@ -1,5 +1,5 @@
 # Example vault profile. Implements the "Общий профиль vault" described in
-# obsidian_research/docs/spec/foundation.md §2.2.
+# docs/spec/foundation.md §2.2.
 #
 # You normally never hand-write this file: `bin/obsidian-vault register`
 # generates one at ~/.claude/obsidian/vaults/<vault_id>.yaml, and
